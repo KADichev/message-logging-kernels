@@ -1,13 +1,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <setjmp.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <vector>
+#include <mammut/mammut.hpp>
+#include "mammut_functions.hpp"
 #include "timers.h"
 #include "mpi.h"
 #include "mpi-ext.h"
 
+#define NO_MAMMUT false
 //#define DEBUG_ITER_COUNT
 
 //#define ENABLE_EVENT_LOG_ 0
@@ -19,6 +24,8 @@ int EVENT_LOGGER;
 #include <math.h>
 #define max(a,b) ((a>b) ? (a) : (b))
 #define min(a,b) ((a<b) ? (a) : (b))
+static int max_iter = 0;
+static bool post_failure_sync = false;
 static int FAILED_PROC;
 static int KILL_OUTER_ITER;
 static int KILL_INNER_ITER;
@@ -26,7 +33,7 @@ static int KILL_PHASE;
 #define CGITMAX 25
 // from S class
 //#define NONZER 7
-//#define NITER 16
+#define NITER 16
 //#define SHIFT 10.0
 #define RCOND 1.0e-1
 //#define NA 1400
@@ -40,17 +47,17 @@ static int KILL_PHASE;
 //#define NA 75000
 //#define NONZER 13
 //#define SHIFT 60
-//#define NITER 75
+//#define NITER 25
 //#define RCOND 1.0e-1
 //from C class
-#define NA 150000
-#define NITER 75
-#define NONZER 15
-#define SHIFT 110
+//#define NA 150000
+//#define NITER 75
+//#define NONZER 15
+//#define SHIFT 110
 // from D class
-//#define NA 1500000
-//#define NONZER 21
-//#define SHIFT 500
+#define NA 1500000
+#define NONZER 21
+#define SHIFT 500
 //E class
 //#define NA 9000000
 //#define NONZER 26
@@ -59,7 +66,7 @@ static int KILL_PHASE;
 #define NZ  NA*(NONZER+1)*(NONZER+1)+NA*(NONZER+2)+NONZER
 
 #define CKPT_STEP 30
-#define LOG_BFR_DEPTH 0
+#define LOG_BFR_DEPTH 30
 
 /* common /partit_size/ */
 typedef int boolean;
@@ -982,7 +989,6 @@ void replay(double x[], double z[], double p[], double q[], double r[], double w
     int size;
     MPI_Comm_size( world, &size); 
 
-    int max_iter = 0;
 
     killed_times++;
     timer_start(3);
@@ -1100,13 +1106,28 @@ void replay(double x[], double z[], double p[], double q[], double r[], double w
 
 void conj_grad (int colidx[], int rowstr[], double x[], double z[], double a[], double p[], double q[], double r[], double w[], double *rnorm, int reduce_exch_proc[], int reduce_send_starts[], int reduce_send_lengths[], int reduce_recv_starts[], int reduce_recv_lengths[], MPI_Comm * parent) {
 
+if (!NO_MAMMUT) {
+#ifdef SCALE_FREQ_DURING_REC_PSTATE_
+    set_12core_max_freq(12, 3199999);
+#endif // SCALE_FREQ_DURING_REC_PSTATE_
+
+#ifdef SCALE_MOD_DURING_REC_
+    setClockModulation(100.);
+#endif // SCALE_MOD_DURING_REC_
+#ifdef SCALE_FREQ_DURING_REC_
+    set_max_freq_mammut(0); 
+    set_max_freq_mammut(1); 
+#endif // SCALE_FREQ_DURING_REC_
+}
+
 
     int size;
+    double sum = 0.0;
     double z_tmp[lastcol-firstcol+2];
     double r_tmp[lastcol-firstcol+2];
     MPI_Comm_size( world, &size); 
     if (LOG_BFR_DEPTH > 0) {
-        printf("Allocating replay2 and replay5 PER ITER = %d bytes\n", (l2npcols+1) * (lastrow-firstrow+2) * sizeof(double));
+        //printf("Allocating replay2 and replay5 PER ITER = %d bytes\n", (l2npcols+1) * (lastrow-firstrow+2) * sizeof(double));
         replay2 = (double ***) malloc(sizeof(double **) * l2npcols);
         for (int i=0; i<l2npcols; i++) {
             replay2[i] = (double **) malloc(sizeof(double *) * LOG_BFR_DEPTH );
@@ -1121,7 +1142,7 @@ void conj_grad (int colidx[], int rowstr[], double x[], double z[], double a[], 
             replay1[i] = (double *) malloc(sizeof(double) * LOG_BFR_DEPTH);
         }
 
-        replay5 = malloc(sizeof(double) * LOG_BFR_DEPTH * (lastrow-firstrow+2));
+        replay5 = (double*)malloc(sizeof(double) * LOG_BFR_DEPTH * (lastrow-firstrow+2));
     }
 
 
@@ -1143,8 +1164,7 @@ void conj_grad (int colidx[], int rowstr[], double x[], double z[], double a[], 
     double rho, alpha, rho0, beta, d;
     MPI_Comm_set_errhandler( world, errh);
 
-restart:
-
+//restart:
     
     for (int j=1; j <= naa; j++) {
         q[j] = 0.0;
@@ -1170,6 +1190,7 @@ restart:
     // survivor
     if (do_recover) {
         replay(x, z, p, q, r, w, false, reduce_exch_proc, reduce_send_starts, reduce_send_lengths, &rho);
+        post_failure_sync = true;
         goto cg_loop_start;
     }
     // newly spawned after crash
@@ -1179,7 +1200,6 @@ restart:
         goto cg_loop_start;
     }
 
-    double sum = 0.0;
 
     //---------------------------------------------------------------------
     //  rho = r.r
@@ -1214,10 +1234,17 @@ restart:
 
 
     rho = sum;
+
 cg_loop_start:
 
-
     for (/* starting point depends on stage*/; cgit <  CGITMAX; cgit++) {
+
+        if (post_failure_sync) {
+            if (cgit  == max_iter) {
+                post_failure_sync = false;
+                down_up(world, cgit, me, size);
+            }
+        }
 
         timer_start(8);
         memcpy(z_tmp, z, (lastcol-firstcol+2)*sizeof(double));
@@ -1482,6 +1509,7 @@ obtain_rho_label:
             writevec(z, p, r, q, rho);
             *last_ckpt = cgit;
         }
+
 #ifdef DEBUG_ITER_COUNT
         fprintf (iter_out, "%d-|\n",me);
         fflush(iter_out);
@@ -1586,17 +1614,28 @@ obtain_rho_label:
 int main(int argc, char **argv) {
 
   int i = 0;
-    timer_clear(0);
-    timer_clear(1);
-    timer_clear(2);
-    timer_clear(3);
-    timer_clear(4);
-    timer_clear(6);
-    timer_clear(7);
+  timer_clear(0);
+  timer_clear(1);
+  timer_clear(2);
+  timer_clear(3);
+  timer_clear(4);
+  timer_clear(6);
+  timer_clear(7);
 
  //if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT) exit(1);
   MPI_Init(&argc, &argv);
   gargv = argv;
+
+  mammut::Mammut m;
+  mammut::energy::Energy* energy = m.getInstanceEnergy();
+  if (!NO_MAMMUT) {
+      counter = energy->getCounter();
+      if (counter == NULL) {
+          fprintf(stderr, "Mammut does not seem to initialise okay\n");
+          exit(-1);
+      }
+  }
+  
 
   const int niter = NITER;
   naa = NA;
@@ -1654,22 +1693,22 @@ int main(int argc, char **argv) {
   double zeta    = randlc( &tran, amult );
 
 
-  int * colidx = malloc(sizeof(int) *(NZ+1));  /* colidx[1:NZ] */
-  int * rowstr = malloc(sizeof(int) * (NA+1+1));  /* rowstr[1:NA+1] */
-  int * iv = malloc(sizeof(int) * (2*NA+1+1));  /* iv[1:2*NA+1] */
-  int * arow = malloc(sizeof(int) * (NZ+1));    /* arow[1:NZ] */
-  int * acol = malloc(sizeof(int) * (NZ+1));    /* acol[1:NZ] */
+  int * colidx = (int *) malloc(sizeof(int) *(NZ+1));  /* colidx[1:NZ] */
+  int * rowstr = (int *) malloc(sizeof(int) * (NA+1+1));  /* rowstr[1:NA+1] */
+  int * iv = (int *) malloc(sizeof(int) * (2*NA+1+1));  /* iv[1:2*NA+1] */
+  int * arow = (int *) malloc(sizeof(int) * (NZ+1));    /* arow[1:NZ] */
+  int * acol = (int *) malloc(sizeof(int) * (NZ+1));    /* acol[1:NZ] */
 
   /* common /main_flt_mem/ */
-  double * v = malloc(sizeof(double) *(NA+1+1));   /* v[1:NA+1] */
-  double * aelt = malloc(sizeof(double) * (NZ+1)); /* aelt[1:NZ] */
-  double * a = malloc(sizeof(double) * (NZ+1));    /* a[1:NZ] */
-  double * x = malloc(sizeof(double) * (NA+2+1));  /* x[1:NA+2] */
-  double * z = malloc(sizeof(double) * (NA+2+1));  /* z[1:NA+2] */
-  double * p = malloc(sizeof(double) * (NA+2+1));  /* p[1:NA+2] */
-  double * q = malloc(sizeof(double) * (NA+2+1));  /* q[1:NA+2] */
-  double * r = malloc(sizeof(double) * (NA+2+1));  /* r[1:NA+2] */
-  double * w = malloc(sizeof(double) * (NA+2+1));  /* w[1:NA+2] */
+  double * v = (double *) malloc(sizeof(double) *(NA+1+1));   /* v[1:NA+1] */
+  double * aelt = (double *) malloc(sizeof(double) * (NZ+1)); /* aelt[1:NZ] */
+  double * a = (double *) malloc(sizeof(double) * (NZ+1));    /* a[1:NZ] */
+  double * x = (double *) malloc(sizeof(double) * (NA+2+1));  /* x[1:NA+2] */
+  double * z = (double *) malloc(sizeof(double) * (NA+2+1));  /* z[1:NA+2] */
+  double * p = (double *) malloc(sizeof(double) * (NA+2+1));  /* p[1:NA+2] */
+  double * q = (double *) malloc(sizeof(double) * (NA+2+1));  /* q[1:NA+2] */
+  double * r = (double *) malloc(sizeof(double) * (NA+2+1));  /* r[1:NA+2] */
+  double * w = (double *) malloc(sizeof(double) * (NA+2+1));  /* w[1:NA+2] */
  makea(naa, nzz, a, colidx, rowstr, NONZER,
      firstrow, lastrow, firstcol, lastcol, 
      RCOND, arow, acol, aelt, v, iv, SHIFT);
@@ -1694,12 +1733,22 @@ int main(int argc, char **argv) {
 
   double norm_temp1[2] = {0.,0.};
   double norm_temp2[2] = {0.,0.};
+  std::vector<double> log_joules(niter);
+  std::vector<double> log_times(niter);
 
   for (outer_iter=0; outer_iter < niter; outer_iter++) {
 
     norm_temp1[0] = 0.;norm_temp1[1] = 0.; norm_temp2[0] = 0.;norm_temp2[1] = 0.;
+    counter->reset();
     timer_start(0);
+    double start_it = MPI_Wtime();
     conj_grad ( colidx, rowstr, x, z, a,  p, q,  r, w, &rnorm, reduce_exch_proc, reduce_send_starts, reduce_send_lengths, reduce_recv_starts, reduce_recv_lengths, &parent);
+
+    double end_it = MPI_Wtime();
+    mammut::energy::Joules joules = counter->getJoules();
+    //total_joules += joules;
+    log_joules[outer_iter] = joules;
+    log_times[outer_iter] = end_it - start_it;
     timer_stop(0);
     if (me == 0) printf("CG iters %d has time %lld\n", outer_iter, timer_read(0));
 
@@ -1746,12 +1795,38 @@ int main(int argc, char **argv) {
 
   }
 
+   double *all_joules;
+   double *all_times;
+   if (me == 0) {
+       all_joules = (double *) malloc(sizeof(double)*nprocs*niter);
+       all_times = (double *) malloc(sizeof(double)*nprocs*niter);
+   }
+   MPI_Gather(&log_joules[0], niter, MPI_DOUBLE, all_joules, niter, MPI_DOUBLE, 0, world);
+   MPI_Gather(&log_times[0], niter, MPI_DOUBLE, all_times, niter, MPI_DOUBLE, 0, world);
+
 #ifdef ENABLE_EVENT_LOG_
    if (me == 0) {
        int a = 1;
        MPI_Send(&a, 1, MPI_INT, EVENT_LOGGER, 4444, world);
    }
 #endif
+
+if (me == 0) {
+    printf("DEBUG: rnak 0 niter = %d, nprocs = %d\n", niter, nprocs);
+    FILE  * f = fopen("stats.csv","w");
+    if (f != NULL) {
+        fprintf(f, "Iteration,Rank,Duration,Joules\n");
+        fprintf(f, "# %d,%d\n", niter, nprocs);
+        for (int i=0; i<niter; i++) {
+            for (int j=0; j<nprocs; j++) {
+                if (all_times[niter*j+i] == 0.) {printf("Fuck, 0. at %d-%d\n", i,j);}
+                fprintf(f, "%d,%d,%5.5e,%5.5e\n", i, j, all_times[niter*j+i], all_joules[niter*j+i]);
+            }
+        }
+    }
+    fclose(f);
+}
+
   free(colidx);
   free(rowstr);
   free(iv);
