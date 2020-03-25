@@ -95,6 +95,7 @@ struct tmp_timings {
 };
 std::map<std::pair<std::pair<int,int>,int>, double *> log_buffer;
 std::map<int,struct tmp_timings> log_reduce;
+std::map<int,double> log_newdt;
 static double total_joules = 0.;
 static bool post_failure_sync = false;
 static bool post_failure = false;
@@ -2669,9 +2670,24 @@ void TimeIncrement(Domain *domain, int replay_it)
     //MPI_Allreduce(&gnewdt, &newdt, 1,
     //((sizeof(Real_t) == 4) ? MPI_FLOAT : MPI_DOUBLE),
     //MPI_MIN, world);
-    allreduce_wrapper(&gnewdt, &newdt, 1,
-            ((sizeof(Real_t) == 4) ? MPI_FLOAT : MPI_DOUBLE),
-            MPI_MIN, world, domain->cycle, replay_it);
+    MPI_Datatype type = ((sizeof(Real_t) == 4) ? MPI_FLOAT : MPI_DOUBLE);
+   if (max_iter == min_iter) {
+        allreduce_wrapper(&gnewdt, &newdt, 1,
+                 type,
+                MPI_MIN, world, domain->cycle, replay_it);
+        log_newdt[domain->cycle-1] = newdt; // we incremented in this iteration, so turn back to pre-increment
+   }
+    else {
+        if ((me == (FAILED_PROC+1)%domain->numProcs) && (log_newdt.find(replay_it) == log_newdt.end())) {
+            fprintf(stderr, "Didn't find log_newdt entry\n");
+            MPI_Abort(world, -1);
+        }
+        if (me == FAILED_PROC) MPI_Recv(&newdt, 1, type, (FAILED_PROC+1)%domain->numProcs, 0, world, MPI_STATUS_IGNORE);
+        if (me == (FAILED_PROC+1)%domain->numProcs) MPI_Send(&log_newdt[replay_it], 1, type, FAILED_PROC, 0, world);
+
+        newdt = log_newdt[replay_it];
+    }
+
 
     //if (!isReplay) {
         ratio = newdt / olddt ;
@@ -2687,6 +2703,7 @@ void TimeIncrement(Domain *domain, int replay_it)
         if (newdt > domain->dtmax) {
             newdt = domain->dtmax ;
         }
+
         domain->deltatime = newdt ;
 
         /* TRY TO PREVENT VERY SMALL SCALING ON THE NEXT CYCLE */
@@ -2699,6 +2716,7 @@ void TimeIncrement(Domain *domain, int replay_it)
             domain->deltatime = targetdt ;
         }
 
+        
         domain->time += domain->deltatime ;
     //}
 
