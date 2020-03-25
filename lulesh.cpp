@@ -75,18 +75,17 @@ Additional BSD Notice
 #include "mpi-ext.h"
 #include <setjmp.h>
 #include <signal.h>
+#include <iostream>
+#include <fstream>
 #include <algorithm>
 #include <mammut/mammut.hpp>
+#include "mammut_functions.hpp"
 
 #include "timers.h"
 
-#define CHECK_DIR "/tmp/"
-#define CHECK_BASE "lulesh"
-#define CHECK_EXT ".back"
 #define max(a,b) ((a>b) ? (a) : (b))
 #define min(a,b) ((a<b) ? (a) : (b))
-
-#define NO_MAMMUT false
+#define DEFAULT_PATH "/tmp"
 
 struct tmp_timings {
   double deltatime;
@@ -97,11 +96,14 @@ struct tmp_timings {
 std::map<std::pair<std::pair<int,int>,int>, double *> log_buffer;
 std::map<int,struct tmp_timings> log_reduce;
 static double total_joules = 0.;
-static mammut::energy::Counter* counter;
+static bool post_failure_sync = false;
+static bool post_failure = false;
+static std::vector<double> log_joules;
+static std::vector<double> log_times;
 
-#define CKPT_STEP 10
-#define LOG_BFR_DEPTH 10
-#define DEFAULT_PATH CHECK_DIR CHECK_BASE CHECK_EXT
+
+#define CKPT_STEP 50
+#define LOG_BFR_DEPTH 50
 
 //#define ENABLE_EVENT_LOG_ 1
 //
@@ -111,7 +113,7 @@ static mammut::energy::Counter* counter;
 int pinit = 1;
 struct Domain *pdom;
 
-//#define LULESH_SHOW_PROGRESS 1
+#define LULESH_SHOW_PROGRESS 0
 #define VIZ_MESH 1 // must remove def to turn off
 #define MAX_CYCLES INT_MAX
 
@@ -343,7 +345,8 @@ void setup_failures() {
     fprintf(stderr, "No failure config file\n");
     MPI_Abort(world, -1);
   }
-  fscanf (f, "%d : %d : %d ", &FAILED_PROC, &KILL_OUTER_ITER, &KILL_PHASE);
+  int dummy;
+  fscanf (f, "%d : %d : %d : %d", &FAILED_PROC, &KILL_OUTER_ITER, &KILL_PHASE, &dummy);
   fclose(f);
   if (me == 0) printf("Will kill %d in iter %d\n", FAILED_PROC, KILL_OUTER_ITER);
 }
@@ -4998,8 +5001,11 @@ void LagrangeLeapFrog(Domain *domain, int replay_it)
     * applied boundary conditions and slide surface considerations */
    //if (me == 3) printf("SANITY CHECK before LagrangeNodal domain->x[95221] = %lf\n", domain->x[95221]);
    LagrangeNodal(domain, replay_it);
-   if (allowed_to_kill && (domain->cycle == KILL_OUTER_ITER) && (me == FAILED_PROC)) {
-     raise(SIGKILL);
+   if (allowed_to_kill && (domain->cycle == KILL_OUTER_ITER)) {
+       if( FAILED_PROC == me ) {
+           printf("Will kill %d\n", me);
+           raise(SIGKILL);
+       }
    }
    //if (me == 3) printf("SANITY CHECK after LagrangeNodal domain->x[95221] = %lf\n", domain->x[95221]);
 
@@ -5025,7 +5031,7 @@ void LagrangeLeapFrog(Domain *domain, int replay_it)
    int col = myDom % dx ;
    int row = (myDom / dx) % dy ;
    int plane = myDom / (dx*dy) ;
-   int nx = 20;
+   int nx = 45;
    LagrangeElements(domain, domain->numElem, replay_it);
 
 #ifdef SEDOV_SYNC_POS_VEL_LATE
@@ -5660,7 +5666,7 @@ void CopyDomain(Domain * src, Domain * dst) {
 
    memcpy(dst->commDataSend, src->commDataSend, comBufSize*sizeof(Real_t));
    memcpy(dst->commDataRecv, src->commDataRecv, comBufSize*sizeof(Real_t));
-   Index_t edgeElems = 20;
+   Index_t edgeElems = 45;
    Index_t edgeNodes = edgeElems+1 ;
    if (dst->symmX) memcpy(dst->symmX, src->symmX, (sizeof(Index_t)*edgeNodes*edgeNodes)) ;
    if (dst->symmY) memcpy(dst->symmY, src->symmY, (sizeof(Index_t)*edgeNodes*edgeNodes)) ;
@@ -5979,8 +5985,8 @@ void LoadSAMI(Domain *domain, char *name)
    domain->dtcourant = tmp[2];
    domain->dthydro = tmp[3];
    domain->cycle = tmp[4];
-   printf("Rank %d: cycle changed to %d\n", me, domain->cycle);
 
+   printf("Rank %d: cycle changed to %d\n", me, domain->cycle);
    // x, y, z
    DBClose(fp);
 
@@ -6055,10 +6061,11 @@ void replay(bool failed, Domain *locDom, int myRank, int numProcs) {
         }
         else {
             // survivors replay messages to failed node
-            for (int j=min_iter; j < peer_iters[me]-1; j++) {
-                printf("Rank %d starts replay iter %d\n", myRank, j);
-                TimeIncrement(locDom, j) ;
+            for (int j=min_iter; j < peer_iters[me]; j++) {
                 //LagrangeLeapFrog -> LagrangeNodal -> CalcForceForNodes
+#if LULESH_SHOW_PROGRESS
+                printf("Rank %d in replay iter %d\n", me, j);
+#endif
                 Real_t * fieldData[6];
                 fieldData[0] = locDom->fx;
                 fieldData[1] = locDom->fy;
@@ -6069,26 +6076,28 @@ void replay(bool failed, Domain *locDom, int myRank, int numProcs) {
 
                 CommSend(locDom, MSG_COMM_SBN, 3, fieldData,
                         locDom->sizeX + 1, locDom->sizeY + 1, locDom->sizeZ +  1,
-                        true, false, j+1, 1) ;
+                        true, false, j, 1) ;
                 // LagrangeLeapFrog -> LagrangeNodal
                 CommSend(locDom, MSG_SYNC_POS_VEL, 6, fieldData,
                         locDom->sizeX + 1, locDom->sizeY + 1, locDom->sizeZ + 1,
-                        false, false, j+1, 2) ;
+                        false, false, j, 2) ;
 
                 // from LagrangeLeapFrog -> LagrangeElements() -> CalcLagrangeElements -> CalcQForElems
                 CommSend(locDom, MSG_MONOQ, 3, fieldData,
                         locDom->sizeX, locDom->sizeY, locDom->sizeZ,
-                        true, true, j+1, 3) ;
+                        true, true, j, 3) ;
 
                 // from LagrangeLeapFrog
 #ifdef SEDOV_SYNC_POS_VEL_LATE
                 CommSend(locDom, MSG_SYNC_POS_VEL, 6, fieldData,
                         locDom->sizeX + 1, locDom->sizeY + 1, locDom->sizeZ + 1,
-                        false, false, j+1, 4) ;
+                        false, false, j, 4) ;
 #endif
+                TimeIncrement(locDom, j) ;
             }
         }
     } // end survivor
+    post_failure_sync = true;
 
 }
 
@@ -6177,19 +6186,12 @@ int main(int argc, char *argv[])
   int opt_its = MAX_CYCLES;
   int do_recover = 0;
 
+
+  init_mammut();
+
   MPI_Init(&argc, &argv) ;
   gargv = argv;
 
-  mammut::Mammut m;
-  mammut::topology::Topology * topology = m.getInstanceTopology();
-  mammut::energy::Energy* energy = m.getInstanceEnergy();
-if (!NO_MAMMUT) {
-    counter = energy->getCounter();
-    if (counter == NULL) {
-        fprintf(stderr, "Mammut does not seem to initialise okay\n");
-        exit(-1);
-    }
-}
 
   MPI_Errhandler errh;
   MPI_Comm_create_errhandler(&errhandler_respawn, &errh);
@@ -6226,10 +6228,7 @@ if (!NO_MAMMUT) {
   
   setup_failures();
 
-  for (int i=0; i<numProcs; i++) {
-    peer_iters.push_back(0);
-  }
-
+  peer_iters.resize(numProcs,0);
 
 
   /* Argument processing */
@@ -6271,7 +6270,8 @@ if (!NO_MAMMUT) {
       fprintf(stderr, "  -p  path to checkpoint file, default: %s\n", DEFAULT_PATH);
       exit(EXIT_FAILURE);
    }
-
+   log_joules.resize(opt_its);
+   log_times.resize(opt_its);
    /* Assume cube processor layout for now */
    testProcs = (int) (cbrt(double(numProcs))+0.5) ;
    if (testProcs*testProcs*testProcs != numProcs) {
@@ -6293,7 +6293,7 @@ if (!NO_MAMMUT) {
 
 
    /* assume cube subdomain geometry for now */
-   Index_t nx = 20;
+   Index_t nx = 45;
 
 
    /* temporary test */
@@ -6324,11 +6324,33 @@ if (!NO_MAMMUT) {
     timer_stop(8);
 #endif
 
-
-
    do_recover = _setjmp(stack_jmp_buf);
 
 
+        // survivor
+   if (do_recover || (MPI_COMM_NULL != parent)) {
+       post_failure = true;
+   }
+   else {
+
+       CommRecv(locDom, MSG_COMM_SBN, 1,
+               locDom->sizeX + 1, locDom->sizeY + 1, locDom->sizeZ + 1,
+               true, false, 0, 0) ;
+       CommSend(locDom, MSG_COMM_SBN, 1, &locDom->nodalMass,
+               locDom->sizeX + 1, locDom->sizeY + 1, locDom->sizeZ +  1,
+               true, false, 0, 0) ;
+       CommSBN(locDom, 1, &locDom->nodalMass) ;
+   }
+   /*
+   if (do_recover) {
+   }
+   // newly spawned after crash
+   else if (MPI_COMM_NULL != parent) {
+       allowed_to_kill = 0;
+       replay(true, locDom, myRank, numProcs);
+       parent = MPI_COMM_NULL;
+   }
+*/
 
 #ifdef ENABLE_EVENT_LOG_
   if (me == EVENT_LOGGER) {
@@ -6346,56 +6368,45 @@ if (!NO_MAMMUT) {
       }
   }
 #endif
-
-    // survivor
-    if (do_recover) {
-      allowed_to_kill = 0;
-      replay(false, locDom, myRank, numProcs);
-    }
-    // newly spawned after crash
-    else if (MPI_COMM_NULL != parent) {
-      allowed_to_kill = 0;
-      replay(true, locDom, myRank, numProcs);
-      parent = MPI_COMM_NULL;
-    }
-    // new launch for processes
-    else {
-      CommRecv(locDom, MSG_COMM_SBN, 1,
-          locDom->sizeX + 1, locDom->sizeY + 1, locDom->sizeZ + 1,
-          true, false, 0, 0) ;
-      CommSend(locDom, MSG_COMM_SBN, 1, &locDom->nodalMass,
-          locDom->sizeX + 1, locDom->sizeY + 1, locDom->sizeZ +  1,
-          true, false, 0, 0) ;
-      CommSBN(locDom, 1, &locDom->nodalMass) ;
-   }
-
-    std::vector<double> log_joules;
-    std::vector<double> log_times;
-    // restarted process needs to increase buffer with dummy values ...
-    if (locDom->cycle > 0) {
-        printf("Rank %d will insert dummy values ...\n", myRank);
-        log_joules.insert(log_joules.begin(), locDom->cycle, 0.);
-        log_times.insert(log_joules.begin(), locDom->cycle, 0.);
-    }
+ double  start_it, end_it;
 
     /* timestep to solution */
 
     timer_start(0);
-    while(locDom->time < locDom->stoptime && locDom->cycle < opt_its) {
-        double start_it = MPI_Wtime();
-        counter->reset();
+    while (locDom->time < locDom->stoptime && locDom->cycle < opt_its) {
 #if LULESH_SHOW_PROGRESS
-      if (myRank == 0) {
+      //if (myRank == 0) {
          printf("(Rank %d): start cycle = %d, time = %e, dt=%e,  domain energy=%e\n", me, locDom->cycle, double(locDom->time), double(locDom->deltatime), (double) locDom->e[0]) ;
-      }
+      //}
 #endif
+        start_it = MPI_Wtime();
+        if (!NO_MAMMUT) Config::counter->reset();
+
+        if (post_failure) {
+            allowed_to_kill = 0;
+            replay(false, locDom, myRank, numProcs);
+            post_failure = false;
+        }
+        if (post_failure_sync) {
+            if (locDom->cycle == max_iter)  {
+                post_failure_sync = false;
+                printf("Rank %d: will call barrier in iter locDom->cycle = %d\n", myRank, locDom->cycle);
+                MPI_Comm newcomm;
+                int color = (me != FAILED_PROC);
+                if (color == 0) color = MPI_UNDEFINED;
+                MPI_Comm_split(world, color, me, &newcomm);
+                if (newcomm != MPI_COMM_NULL) down_up(newcomm, locDom->cycle, myRank, numProcs);
+            }
+
+        }
         if (locDom->cycle % cfreq == 0)  
         {
             timer_start(1);
             DumpDomain(locDom, myRank, numProcs, 'w') ;
             timer_stop(1);
         }
-        TimeIncrement(locDom, locDom->cycle) ;
+
+
 #ifdef USE_TEMP_BUF_
         timer_start(8);
         CopyDomain(locDom, tmp_domain);
@@ -6407,16 +6418,18 @@ if (!NO_MAMMUT) {
 #else
         LagrangeLeapFrog(locDom, locDom->cycle) ;
 #endif
-        double end_it = MPI_Wtime();
-        mammut::energy::Joules joules = counter->getJoules();
-        //total_joules += joules;
-        log_joules.push_back(joules);
-        log_times.push_back(end_it - start_it);
+        end_it = MPI_Wtime();
+        if (!NO_MAMMUT) {mammut::energy::Joules joules = Config::counter->getJoules();
+            //total_joules += joules;
+            log_joules[locDom->cycle] = joules;
+            log_times[locDom->cycle] = end_it - start_it;
+        }
 #if LULESH_SHOW_PROGRESS
-      if (myRank == 0) {
+      //if (myRank == 0) {
          printf("(Rank %d): end cycle = %d, time = %e, dt=%e,  domain energy=%e\n", me, locDom->cycle, double(locDom->time), double(locDom->deltatime), (double) locDom->e[0]) ;
-      }
+      //}
 #endif
+         TimeIncrement(locDom, locDom->cycle);
    }
    timer_stop(0);
 
@@ -6429,26 +6442,30 @@ if (!NO_MAMMUT) {
    }
    MPI_Gather(&log_joules[0], locDom->cycle, MPI_DOUBLE, all_joules, locDom->cycle, MPI_DOUBLE, 0, world);
    MPI_Gather(&log_times[0], locDom->cycle, MPI_DOUBLE, all_times, locDom->cycle, MPI_DOUBLE, 0, world);
+   
 //
    if (myRank == 0) {
      CorrectnessCheck(locDom) ;
      printf("(Rank %d:)\tLULESH iter time: %12.12e\tI/O time: %12.12e\tMPI time: %12.12e\t malloc/memcpy for messages: %12.12e, simulated event logging: %12.12e, overheads of deep copying: %12.12e\n", me, timer_read(0), timer_read(1), timer_read(3), timer_read(6), timer_read(7), timer_read(8)); 
   
-        FILE  * f = fopen("stats.csv","w");
-        if (f != NULL) {
-        fprintf(f, "Iteration,Rank,Duration,Joules\n");
-        fprintf(f, "# %d,%d\n", locDom->cycle, numProcs);
-        for (int i=0; i<locDom->cycle; i++) {
-            for (int j=0; j<numProcs; j++) {
-                if (all_times[locDom->cycle*j+i] == 0.) {printf("Fuck, 0. at %d-%d\n", i,j);}
-                fprintf(f, "%d,%d,%5.5e,%5.5e\n", i, j, all_times[locDom->cycle*j+i], all_joules[locDom->cycle*j+i]);
-            }
-        }
-        }
-        fclose(f);
+     std::ofstream f;
+     f.open("stats.csv");
+     f << "Iteration,Rank,Duration,Joules\n";
+     f << "# " << locDom->cycle << "," << numProcs << "\n";
+     if (f.is_open()) {
+         for (int i=0; i<locDom->cycle; i++) {
+             for (int j=0; j<numProcs; j++) {
+                 if (all_times[locDom->cycle*j+i] == 0.) {printf("Fuck, 0. at locDom->cycle = %d, num procs = %d, %d-%d\n", locDom->cycle, numProcs, i,j);}
+                 //fprintf(f, "%d,%d,%5.5e,%5.5e\n", i, j, all_times[locDom->cycle*j+i], all_joules[locDom->cycle*j+i]);
+                 f << i << "," << j << "," << all_times[locDom->cycle*j+i] << "," << all_joules[locDom->cycle*j+i] << "\n";
+                 //printf("a store -> %d-%d\n", i, j);
+             }
+         }
+         f.close();
+     }
+     else {std::cout << "Can't open file\n";}
 
    }
-
    DelDomain(locDom) ;
 #ifdef USE_TEMP_BUF_
    timer_start(8);

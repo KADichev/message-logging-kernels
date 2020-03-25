@@ -1,10 +1,50 @@
+#include <unistd.h>
 #include "mammut_functions.hpp"
 #include "mpi.h"
 
-//extern mammut::cpufreq::CpuFreq* cpufreq;
+mammut::cpufreq::CpuFreq* Config::cpufreq;
+mammut::task::TasksManager *Config::pm;
+mammut::topology::VirtualCore * Config::virtualCore;
+mammut::topology::Topology* Config::topology;
+mammut::energy::Counter* Config::counter;
+mammut::energy::Energy*  Config::energy;
+mammut::task::ProcessHandler * Config::process;
+mammut::Mammut Config::m;
+
+void init_mammut() {
+
+    printf("Initialize Mammut ..\n");
+    Config::topology = Config::m.getInstanceTopology();
+    Config::energy = Config::m.getInstanceEnergy();
+    Config::pm = Config::m.getInstanceTask();
+    Config::cpufreq = Config::m.getInstanceCpuFreq();
+    Config::process = Config::pm->getProcessHandler(getpid());
+    if (!NO_MAMMUT) {
+        mammut::topology::VirtualCoreId vcid;
+        Config::process->getVirtualCoreId(vcid);
+        Config::virtualCore = Config::topology->getVirtualCore(vcid);
+        Config::counter = Config::energy->getCounter();
+        if (Config::counter == NULL) {
+            fprintf(stderr, "Mammut does not seem to initialise okay\n");
+            exit(-1);
+        }
+#ifdef SCALE_FREQ_DURING_REC_PSTATE_
+        set_12core_max_freq(12, 3199999);
+#endif // SCALE_FREQ_DURING_REC_PSTATE_
+
+#ifdef SCALE_MOD_DURING_REC_
+        setClockModulation(100.);
+#endif // SCALE_MOD_DURING_REC_
+#ifdef SCALE_FREQ_DURING_REC_
+        set_max_freq_mammut(0); 
+        set_max_freq_mammut(1); 
+#endif // SCALE_FREQ_DURING_REC_
+    }
+
+}
 
 void set_min_freq_mammut(int cpu) {
-    auto domains = cpufreq->getDomains();
+    auto domains = Config::cpufreq->getDomains();
     auto dom = domains[cpu];
     dom->removeTurboFrequencies();
     mammut::cpufreq::Frequency target = dom->getAvailableFrequencies().front(); // Use back() for maximum frequency
@@ -15,7 +55,7 @@ void set_min_freq_mammut(int cpu) {
 
 void set_max_freq_mammut(int cpu) {
     //printf("DEBUG: proc %d calls max_freq min\n", rank);
-    auto domains = cpufreq->getDomains();
+    auto domains = Config::cpufreq->getDomains();
     auto dom = domains[cpu];
     dom->removeTurboFrequencies();
     mammut::cpufreq::Frequency target = dom->getAvailableFrequencies().back(); // Use back() for maximum frequency
@@ -34,7 +74,7 @@ int get_socket(int rank, int size) {
 
 void setClockModulation(double perc) {
 
-    if (!virtualCore->hasClockModulation()) {
+    if (!Config::virtualCore->hasClockModulation()) {
         fprintf(stderr, "Clock modulation disabled\n");
         //NO_MAMMUT = true;
     }
@@ -47,13 +87,13 @@ void setClockModulation(double perc) {
             core->setClockModulation(perc);
         }
         */
-        virtualCore->setClockModulation(perc);
+        Config::virtualCore->setClockModulation(perc);
     }
 
 
 }
 void setClockModulationFrac(double fraction) {
-    auto values = topology->getCpus().front()->getClockModulationValues();
+    auto values = Config::topology->getCpus().front()->getClockModulationValues();
     double clkModValue;  // This will be set to the actual clock modulation value
     if(values.size()){
         uint32_t index = round((double)(values.size() - 1) * fraction);
@@ -97,7 +137,7 @@ void down_up(MPI_Comm world, int iteration, int rank, int size) {
         set_12core_max_freq(12, 1200000);
 #endif // SCALE_FREQ_DURING_REC_PSTATE_
         // go back to normal operation
-        //printf("Rank %d Before barrier in it %d at %lf\n", rank, iteration, MPI_Wtime()-start);
+        printf("Rank %d Before barrier in it %d at %lf\n", rank, iteration, MPI_Wtime());
 
         /*
            int right = (rank+1) % size;
@@ -113,14 +153,14 @@ void down_up(MPI_Comm world, int iteration, int rank, int size) {
         //MPI_Recv(&dummy, 1, MPI_INT, last_dead, 0, world, MPI_STATUS_IGNORE);
 
         MPI_Barrier(world);
-        //printf("Rank %d After barrier in it %d at %lf\n", rank, iteration, MPI_Wtime()-start);
+        printf("Rank %d After barrier in it %d at %lf\n", rank, iteration, MPI_Wtime());
 #ifdef SCALE_FREQ_DURING_REC_
         set_max_freq_mammut(get_socket(rank,size));
 #endif // SCALE_FREQ_DURING_REC_
 #ifdef SCALE_MOD_DURING_REC_
         fraction = 1.0;
         setClockModulationFrac(fraction);
-        printf("Rank %d: Reset clock modulation in iter %d at %lf\n", rank, iteration, MPI_Wtime()-start);
+        //printf("Rank %d: Reset clock modulation in iter %d at %lf\n", rank, iteration, MPI_Wtime()-start);
 #endif
 #ifdef SCALE_FREQ_DURING_REC_PSTATE_
         set_12core_max_freq(12, 3199999);

@@ -12,7 +12,6 @@
 #include "mpi.h"
 #include "mpi-ext.h"
 
-#define NO_MAMMUT false
 //#define DEBUG_ITER_COUNT
 
 //#define ENABLE_EVENT_LOG_ 0
@@ -25,15 +24,16 @@ int EVENT_LOGGER;
 #define max(a,b) ((a>b) ? (a) : (b))
 #define min(a,b) ((a<b) ? (a) : (b))
 static int max_iter = 0;
+static bool post_failure = false;
 static bool post_failure_sync = false;
 static int FAILED_PROC;
 static int KILL_OUTER_ITER;
 static int KILL_INNER_ITER;
 static int KILL_PHASE;
-#define CGITMAX 25
+#define CGITMAX 75
 // from S class
 //#define NONZER 7
-#define NITER 16
+#define NITER 4
 //#define SHIFT 10.0
 #define RCOND 1.0e-1
 //#define NA 1400
@@ -65,8 +65,8 @@ static int KILL_PHASE;
 
 #define NZ  NA*(NONZER+1)*(NONZER+1)+NA*(NONZER+2)+NONZER
 
-#define CKPT_STEP 30
-#define LOG_BFR_DEPTH 30
+#define CKPT_STEP 75
+#define LOG_BFR_DEPTH 75
 
 /* common /partit_size/ */
 typedef int boolean;
@@ -151,7 +151,7 @@ void setup_failures() {
  */
 static int app_needs_repair(MPI_Comm comm)
 {
-  printf("(Rank %d): enter app_needs_repair\n", me);
+    printf("(Rank %d): enter app_needs_repair\n", me);
     /* This is the first time we see an error on this comm, do the swap of the
      * worlds. Next time we will have nothing to do. */
     if( comm == world ) {
@@ -1101,24 +1101,12 @@ void replay(double x[], double z[], double p[], double q[], double r[], double w
             //c---------------------------------------------------------------------
         }
     }
+    post_failure = true;
+    post_failure_sync = true;
     //printf("Rank %d: leaving replay\n", me);
 }
 
 void conj_grad (int colidx[], int rowstr[], double x[], double z[], double a[], double p[], double q[], double r[], double w[], double *rnorm, int reduce_exch_proc[], int reduce_send_starts[], int reduce_send_lengths[], int reduce_recv_starts[], int reduce_recv_lengths[], MPI_Comm * parent) {
-
-if (!NO_MAMMUT) {
-#ifdef SCALE_FREQ_DURING_REC_PSTATE_
-    set_12core_max_freq(12, 3199999);
-#endif // SCALE_FREQ_DURING_REC_PSTATE_
-
-#ifdef SCALE_MOD_DURING_REC_
-    setClockModulation(100.);
-#endif // SCALE_MOD_DURING_REC_
-#ifdef SCALE_FREQ_DURING_REC_
-    set_max_freq_mammut(0); 
-    set_max_freq_mammut(1); 
-#endif // SCALE_FREQ_DURING_REC_
-}
 
 
     int size;
@@ -1190,7 +1178,6 @@ if (!NO_MAMMUT) {
     // survivor
     if (do_recover) {
         replay(x, z, p, q, r, w, false, reduce_exch_proc, reduce_send_starts, reduce_send_lengths, &rho);
-        post_failure_sync = true;
         goto cg_loop_start;
     }
     // newly spawned after crash
@@ -1238,11 +1225,17 @@ if (!NO_MAMMUT) {
 cg_loop_start:
 
     for (/* starting point depends on stage*/; cgit <  CGITMAX; cgit++) {
+        if (me == FAILED_PROC) {
+        printf("Rank %d iter %d\n", me, cgit);
+        }
 
-        if (post_failure_sync) {
-            if (cgit  == max_iter) {
-                post_failure_sync = false;
-                down_up(world, cgit, me, size);
+        if (post_failure) {
+            if (post_failure_sync) {
+                if (cgit  == max_iter) {
+                    post_failure = false;
+                    post_failure_sync = false;
+                    down_up(world, cgit, me, size);
+                }
             }
         }
 
@@ -1622,19 +1615,11 @@ int main(int argc, char **argv) {
   timer_clear(6);
   timer_clear(7);
 
+  init_mammut();
+
  //if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT) exit(1);
   MPI_Init(&argc, &argv);
   gargv = argv;
-
-  mammut::Mammut m;
-  mammut::energy::Energy* energy = m.getInstanceEnergy();
-  if (!NO_MAMMUT) {
-      counter = energy->getCounter();
-      if (counter == NULL) {
-          fprintf(stderr, "Mammut does not seem to initialise okay\n");
-          exit(-1);
-      }
-  }
   
 
   const int niter = NITER;
@@ -1739,13 +1724,13 @@ int main(int argc, char **argv) {
   for (outer_iter=0; outer_iter < niter; outer_iter++) {
 
     norm_temp1[0] = 0.;norm_temp1[1] = 0.; norm_temp2[0] = 0.;norm_temp2[1] = 0.;
-    counter->reset();
+    Config::counter->reset();
     timer_start(0);
     double start_it = MPI_Wtime();
     conj_grad ( colidx, rowstr, x, z, a,  p, q,  r, w, &rnorm, reduce_exch_proc, reduce_send_starts, reduce_send_lengths, reduce_recv_starts, reduce_recv_lengths, &parent);
 
     double end_it = MPI_Wtime();
-    mammut::energy::Joules joules = counter->getJoules();
+    mammut::energy::Joules joules = Config::counter->getJoules();
     //total_joules += joules;
     log_joules[outer_iter] = joules;
     log_times[outer_iter] = end_it - start_it;
@@ -1842,6 +1827,8 @@ if (me == 0) {
   free(r);
   free(w);
   //writea(rowstr, colidx, a);
+  printf("Process %d: before finalize\n", me);
+  MPI_Barrier(world);
   MPI_Finalize();
   return 0;
 }

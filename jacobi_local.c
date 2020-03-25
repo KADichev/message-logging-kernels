@@ -38,7 +38,6 @@ static double total_wait = 0.;
 static double total_sor = 0.;
 static double total_joules = 0.;
 static double start;
-static double fraction = 1.0;
 static  int SOR_updates = 0;
 static int MPIX_Comm_replace(MPI_Comm comm, MPI_Comm *newcomm);
 
@@ -51,9 +50,6 @@ static char estr[MPI_MAX_ERROR_STRING]=""; static int strl; /* error messages */
 
 extern char** gargv;
 extern int* peer_iters;
-
-extern mammut::energy::Counter* counter;
-extern mammut::task::ProcessHandler * process;
 
 static int ckpt_iteration = -1, last_dead = FAILED_RANK;
 static int iteration;
@@ -422,21 +418,6 @@ recv_west = (TYPE*)malloc(sizeof(TYPE) * MB);
  */
 
 
-if (!NO_MAMMUT) {
-#ifdef SCALE_FREQ_DURING_REC_PSTATE_
-    set_12core_max_freq(12, 3199999);
-#endif // SCALE_FREQ_DURING_REC_PSTATE_
-
-#ifdef SCALE_MOD_DURING_REC_
-    setClockModulation(100.);
-#endif // SCALE_MOD_DURING_REC_
-#ifdef SCALE_FREQ_DURING_REC_
-    set_max_freq_mammut(0); 
-    set_max_freq_mammut(1); 
-#endif // SCALE_FREQ_DURING_REC_
-}
-
-
 iteration = 0;
 
 restart:  /* This is my restart point */
@@ -472,7 +453,7 @@ for (; iteration<MAX_ITER; iteration++) {
 
     if (!NO_MAMMUT) {
         start_it = MPI_Wtime();
-        counter->reset();
+        Config::counter->reset();
     }
 
     // super important to not deadlock
@@ -693,7 +674,7 @@ do_sor:
 
     if (!NO_MAMMUT) {
         end_it = MPI_Wtime();
-        mammut::energy::Joules joules = counter->getJoules();
+        mammut::energy::Joules joules = Config::counter->getJoules();
         total_joules += joules;
         log_joules[iteration] = joules;
         log_times[iteration] = (end_it - start_it);

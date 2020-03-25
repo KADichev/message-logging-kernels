@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <vector>
 #include <mammut/mammut.hpp>
+#include "mammut_functions.hpp"
 
 char** gargv = NULL;
 
@@ -21,11 +22,6 @@ static int P = -1;
 static int Q = -1;
 static int KILL_ITER = -1;
 int *peer_iters;
-mammut::topology::VirtualCore * virtualCore;
-mammut::topology::Topology * topology;
-mammut::energy::Counter* counter;
-mammut::task::ProcessHandler * process;
-mammut::cpufreq::CpuFreq* cpufreq;
 
 int generate_border(TYPE* border, int nb_elems)
 {
@@ -111,23 +107,7 @@ int main( int argc, char* argv[] )
 
     gargv = argv;
 
-    mammut::Mammut m;
-    topology = m.getInstanceTopology();
-    mammut::energy::Energy* energy = m.getInstanceEnergy();
-    mammut::task::TasksManager * pm = m.getInstanceTask();
-    cpufreq = m.getInstanceCpuFreq();
-    process = pm->getProcessHandler(getpid());
-if (!NO_MAMMUT) {
-    mammut::topology::VirtualCoreId vcid;
-    process->getVirtualCoreId(vcid);
-    virtualCore = topology->getVirtualCore(vcid);
-    counter = energy->getCounter();
-    if (counter == NULL) {
-        fprintf(stderr, "Mammut does not seem to initialise okay\n");
-        exit(-1);
-    }
-}
-
+    init_mammut();
 
     MPI_Init(&argc, &argv);
 
