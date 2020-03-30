@@ -30,10 +30,10 @@ static int FAILED_PROC;
 static int KILL_OUTER_ITER;
 static int KILL_INNER_ITER;
 static int KILL_PHASE;
-#define CGITMAX 75
+#define CGITMAX 25
 // from S class
 //#define NONZER 7
-#define NITER 4
+#define NITER 2
 //#define SHIFT 10.0
 #define RCOND 1.0e-1
 //#define NA 1400
@@ -136,7 +136,7 @@ static int worldi = 0;
 
 void setup_failures() {
 
-  FILE * f = fopen("failures.conf", "r");
+  FILE * f = fopen("failures.cg.conf", "r");
   if (f == NULL) {
     fprintf(stderr, "No failure config file\n");
     MPI_Abort(world, -1);
@@ -1109,6 +1109,8 @@ void replay(double x[], double z[], double p[], double q[], double r[], double w
 void conj_grad (int colidx[], int rowstr[], double x[], double z[], double a[], double p[], double q[], double r[], double w[], double *rnorm, int reduce_exch_proc[], int reduce_send_starts[], int reduce_send_lengths[], int reduce_recv_starts[], int reduce_recv_lengths[], MPI_Comm * parent) {
 
 
+    std::vector<double> log_joules(CGITMAX);
+    std::vector<double> log_times(CGITMAX);
     int size;
     double sum = 0.0;
     double z_tmp[lastcol-firstcol+2];
@@ -1226,8 +1228,10 @@ cg_loop_start:
 
     for (/* starting point depends on stage*/; cgit <  CGITMAX; cgit++) {
         if (me == FAILED_PROC) {
-        printf("Rank %d iter %d\n", me, cgit);
+            printf("Rank %d in iter %d\n", me, cgit);
         }
+        Config::counter->reset();
+        double start_it = MPI_Wtime();
 
         if (post_failure) {
             if (post_failure_sync) {
@@ -1502,12 +1506,19 @@ obtain_rho_label:
             writevec(z, p, r, q, rho);
             *last_ckpt = cgit;
         }
+        double end_it = MPI_Wtime();
+        mammut::energy::Joules joules = Config::counter->getJoules();
+        //total_joules += joules;
+        log_joules[cgit] = joules;
+        log_times[cgit] = end_it - start_it;
 
 #ifdef DEBUG_ITER_COUNT
         fprintf (iter_out, "%d-|\n",me);
         fflush(iter_out);
 #endif
     } //                             ! end of do cgit=1,cgitmax
+
+
 
 #ifdef DEBUG_ITER_COUNT
     fclose(iter_out);
@@ -1600,7 +1611,7 @@ obtain_rho_label:
     if( me == root ) *rnorm = sqrt( d );
 
 
-    return;
+    log_stats(&log_joules[0], &log_times[0], CGITMAX, KILL_INNER_ITER, nprocs, FAILED_PROC, world, me);
 }
 
 
@@ -1718,22 +1729,11 @@ int main(int argc, char **argv) {
 
   double norm_temp1[2] = {0.,0.};
   double norm_temp2[2] = {0.,0.};
-  std::vector<double> log_joules(niter);
-  std::vector<double> log_times(niter);
-
   for (outer_iter=0; outer_iter < niter; outer_iter++) {
 
     norm_temp1[0] = 0.;norm_temp1[1] = 0.; norm_temp2[0] = 0.;norm_temp2[1] = 0.;
-    Config::counter->reset();
     timer_start(0);
-    double start_it = MPI_Wtime();
     conj_grad ( colidx, rowstr, x, z, a,  p, q,  r, w, &rnorm, reduce_exch_proc, reduce_send_starts, reduce_send_lengths, reduce_recv_starts, reduce_recv_lengths, &parent);
-
-    double end_it = MPI_Wtime();
-    mammut::energy::Joules joules = Config::counter->getJoules();
-    //total_joules += joules;
-    log_joules[outer_iter] = joules;
-    log_times[outer_iter] = end_it - start_it;
     timer_stop(0);
     if (me == 0) printf("CG iters %d has time %lld\n", outer_iter, timer_read(0));
 
@@ -1780,14 +1780,6 @@ int main(int argc, char **argv) {
 
   }
 
-   double *all_joules;
-   double *all_times;
-   if (me == 0) {
-       all_joules = (double *) malloc(sizeof(double)*nprocs*niter);
-       all_times = (double *) malloc(sizeof(double)*nprocs*niter);
-   }
-   MPI_Gather(&log_joules[0], niter, MPI_DOUBLE, all_joules, niter, MPI_DOUBLE, 0, world);
-   MPI_Gather(&log_times[0], niter, MPI_DOUBLE, all_times, niter, MPI_DOUBLE, 0, world);
 
 #ifdef ENABLE_EVENT_LOG_
    if (me == 0) {
@@ -1796,21 +1788,6 @@ int main(int argc, char **argv) {
    }
 #endif
 
-if (me == 0) {
-    printf("DEBUG: rnak 0 niter = %d, nprocs = %d\n", niter, nprocs);
-    FILE  * f = fopen("stats.csv","w");
-    if (f != NULL) {
-        fprintf(f, "Iteration,Rank,Duration,Joules\n");
-        fprintf(f, "# %d,%d\n", niter, nprocs);
-        for (int i=0; i<niter; i++) {
-            for (int j=0; j<nprocs; j++) {
-                if (all_times[niter*j+i] == 0.) {printf("Fuck, 0. at %d-%d\n", i,j);}
-                fprintf(f, "%d,%d,%5.5e,%5.5e\n", i, j, all_times[niter*j+i], all_joules[niter*j+i]);
-            }
-        }
-    }
-    fclose(f);
-}
 
   free(colidx);
   free(rowstr);

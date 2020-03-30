@@ -341,7 +341,7 @@ static int MPIX_Comm_replace(MPI_Comm comm, MPI_Comm *newcomm)
 
 void setup_failures() {
 
-  FILE * f = fopen("failures.conf", "r");
+  FILE * f = fopen("failures.lulesh.conf", "r");
   if (f == NULL) {
     fprintf(stderr, "No failure config file\n");
     MPI_Abort(world, -1);
@@ -6409,11 +6409,11 @@ int main(int argc, char *argv[])
             if (locDom->cycle == max_iter)  {
                 post_failure_sync = false;
                 printf("Rank %d: will call barrier in iter locDom->cycle = %d\n", myRank, locDom->cycle);
-                MPI_Comm newcomm;
-                int color = (me != FAILED_PROC);
-                if (color == 0) color = MPI_UNDEFINED;
-                MPI_Comm_split(world, color, me, &newcomm);
-                if (newcomm != MPI_COMM_NULL) down_up(newcomm, locDom->cycle, myRank, numProcs);
+                //MPI_Comm newcomm;
+                //int color = (me != FAILED_PROC);
+                //if (color == 0) color = MPI_UNDEFINED;
+                //MPI_Comm_split(world, color, me, &newcomm);
+                down_up(world, locDom->cycle, myRank, numProcs);
             }
 
         }
@@ -6452,38 +6452,15 @@ int main(int argc, char *argv[])
    timer_stop(0);
 
 
-   double *all_joules;
-   double *all_times;
-   if (myRank == 0) {
-       all_joules = (double *) malloc(sizeof(double)*numProcs*locDom->cycle);
-       all_times = (double *) malloc(sizeof(double)*numProcs*locDom->cycle);
-   }
-   MPI_Gather(&log_joules[0], locDom->cycle, MPI_DOUBLE, all_joules, locDom->cycle, MPI_DOUBLE, 0, world);
-   MPI_Gather(&log_times[0], locDom->cycle, MPI_DOUBLE, all_times, locDom->cycle, MPI_DOUBLE, 0, world);
-   
 //
    if (myRank == 0) {
      CorrectnessCheck(locDom) ;
      printf("(Rank %d:)\tLULESH iter time: %12.12e\tI/O time: %12.12e\tMPI time: %12.12e\t malloc/memcpy for messages: %12.12e, simulated event logging: %12.12e, overheads of deep copying: %12.12e\n", me, timer_read(0), timer_read(1), timer_read(3), timer_read(6), timer_read(7), timer_read(8)); 
   
-     std::ofstream f;
-     f.open("stats.csv");
-     f << "Iteration,Rank,Duration,Joules\n";
-     f << "# " << locDom->cycle << "," << numProcs << "\n";
-     if (f.is_open()) {
-         for (int i=0; i<locDom->cycle; i++) {
-             for (int j=0; j<numProcs; j++) {
-                 if (all_times[locDom->cycle*j+i] == 0.) {printf("Fuck, 0. at locDom->cycle = %d, num procs = %d, %d-%d\n", locDom->cycle, numProcs, i,j);}
-                 //fprintf(f, "%d,%d,%5.5e,%5.5e\n", i, j, all_times[locDom->cycle*j+i], all_joules[locDom->cycle*j+i]);
-                 f << i << "," << j << "," << all_times[locDom->cycle*j+i] << "," << all_joules[locDom->cycle*j+i] << "\n";
-                 //printf("a store -> %d-%d\n", i, j);
-             }
-         }
-         f.close();
-     }
-     else {std::cout << "Can't open file\n";}
 
    }
+   log_stats(&log_joules[0], &log_times[0], locDom->cycle, KILL_OUTER_ITER, numProcs, FAILED_PROC, world, myRank);
+
    DelDomain(locDom) ;
 #ifdef USE_TEMP_BUF_
    timer_start(8);

@@ -36,8 +36,7 @@ void init_mammut() {
         setClockModulation(100.);
 #endif // SCALE_MOD_DURING_REC_
 #ifdef SCALE_FREQ_DURING_REC_
-        set_max_freq_mammut(0); 
-        set_max_freq_mammut(1); 
+        set_frequency(2400000);
 #endif // SCALE_FREQ_DURING_REC_
     }
 
@@ -70,6 +69,17 @@ int get_socket(int rank, int size) {
 //        return 0;
 //    else 
 //        return 1;
+}
+
+
+
+void set_frequency(double frequency){
+    //Topology* t_handler = m.getInstanceTopology();
+    //VirtualCore* vc = t_handler->getVirtualCore(static_cast<VirtualCoreId>(core_id));
+    printf("Set frequency -> %lf\n", frequency);
+    mammut::cpufreq::Domain* d = Config::cpufreq->getDomain(Config::virtualCore);
+    d->setGovernor(mammut::cpufreq::GOVERNOR_USERSPACE);
+    d->setFrequencyUserspace(frequency);
 }
 
 void setClockModulation(double perc) {
@@ -124,7 +134,7 @@ void down_up(MPI_Comm world, int iteration, int rank, int size) {
     //MPI_Barrier(world);
     if (!NO_MAMMUT) {
 #ifdef SCALE_FREQ_DURING_REC_
-        set_min_freq_mammut(get_socket(rank,size));
+        set_frequency(1200000);
         // this is needed, because ranks shouldn't
         // end up changing up and down the socket frequency
         //MPI_Barrier(world);
@@ -155,7 +165,7 @@ void down_up(MPI_Comm world, int iteration, int rank, int size) {
         MPI_Barrier(world);
         printf("Rank %d After barrier in it %d at %lf\n", rank, iteration, MPI_Wtime());
 #ifdef SCALE_FREQ_DURING_REC_
-        set_max_freq_mammut(get_socket(rank,size));
+        set_frequency(2400000);
 #endif // SCALE_FREQ_DURING_REC_
 #ifdef SCALE_MOD_DURING_REC_
         fraction = 1.0;
@@ -166,5 +176,52 @@ void down_up(MPI_Comm world, int iteration, int rank, int size) {
         set_12core_max_freq(12, 3199999);
 #endif // SCALE_FREQ_DURING_REC_PSTATE_
         //#endif
+    }
+}
+
+void log_stats(double *log_joules, double * log_times, int iter, int kill_iter, int size, int failed_proc, MPI_Comm world, int me) {
+    // POST_PROCESSING
+    
+    double *all_joules;
+    double *all_times;
+    if (me == 0) {
+        all_joules = (double *) malloc(sizeof(double)*size*iter);
+        all_times = (double *) malloc(sizeof(double)*size*iter);
+    }
+    MPI_Gather(&log_joules[0], iter, MPI_DOUBLE, all_joules, iter, MPI_DOUBLE, 0, world);
+    MPI_Gather(&log_times[0], iter, MPI_DOUBLE, all_times, iter, MPI_DOUBLE, 0, world);
+
+    if (me == 0) {
+        printf("DEBUG: rnak 0 niter = %d, nprocs = %d\n", iter, size);
+        for (int i=0; i<kill_iter; i++) {
+            double tmp_sum = 0.;
+            double tmp_joul = 0.;
+            for (int j=0; j<size; j++) {
+                if (j != failed_proc) {
+                    tmp_sum += all_times[iter*j+i];
+                    tmp_joul += all_joules[iter*j+i];
+                }
+                else { // j == FAILED_PROC
+                    // ad to failed process the recovery iterations as
+                    // part of the failed iteration
+                    all_times[iter*j+kill_iter] += all_times[iter*j+i];
+                    all_joules[iter*j+kill_iter] += all_joules[iter*j+i];
+                }
+            }
+            all_times[failed_proc*iter+i] = tmp_sum/(size-1);
+            all_joules[failed_proc*iter+i] = tmp_joul/(size-1);
+        }
+
+        std::ofstream f;
+        f.open("stats.csv");
+        f << "Iteration,Rank,Duration,Joules\n";
+        f << "# " << iter << "," << size << "," << kill_iter << "\n";
+        for (int i=0; i<iter; i++) {
+            for (int j=0; j<size; j++) {
+                if (all_times[iter*j+i] == 0.) {printf("Fuck, 0. at %d-%d\n", i,j);}
+                f <<  i << "," << j << "," << all_times[iter*j+i] << "," << all_joules[iter*j+i] << std::endl;
+            }
+        }
+        f.close();
     }
 }

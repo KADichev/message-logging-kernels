@@ -708,13 +708,6 @@ MPI_Get_processor_name(hostname, &resultlen);
     free(recv_east);
     free(bckpt);
 
-    double * all_joules;
-    double * all_times;
-    if (rank == 0) {
-        all_joules = (double *) malloc(size*iteration*sizeof(double));
-        all_times = (double *) malloc(size*iteration*sizeof(double));
-    }
-   
 //    char filename[12];
 //    sprintf(filename,"stats.%d.csv",rank);
 //    FILE *f2 = fopen(filename,"w");
@@ -723,20 +716,8 @@ MPI_Get_processor_name(hostname, &resultlen);
 //    }
 //fclose(f2);
 
-    MPI_Gather(log_joules, iteration, MPI_DOUBLE, all_joules, iteration, MPI_DOUBLE, 0, world);
-    MPI_Gather(log_times, iteration, MPI_DOUBLE, all_times, iteration, MPI_DOUBLE, 0, world);
-    if (rank == 0)  {
-        FILE  * f = fopen("stats.csv","w");
-        fprintf(f, "Iteration,Rank,Duration,Joules\n");
-        fprintf(f, "# %d,%d\n", iteration, size);
-        for (int i=0; i<iteration; i++) {
-            for (int j=0; j<size; j++) {
-                if (all_times[iteration*j+i] == 0.) {printf("Fuck, 0. at %d-%d\n", i,j);}
-                fprintf(f, "%d,%d,%5.5e,%5.5e\n", i, j, all_times[iteration*j+i], all_joules[iteration*j+i]);
-            }
-        }
-        fclose(f);
-    }
+
+log_stats(&log_joules[0], &log_times[0], iteration, KILL_ITER, size, FAILED_RANK, world, rank);
 
     return iteration;
 }
