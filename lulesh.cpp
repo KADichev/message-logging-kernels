@@ -103,9 +103,6 @@ static std::vector<double> log_joules;
 static std::vector<double> log_times;
 
 
-#define CKPT_STEP 50
-#define LOG_BFR_DEPTH 50
-
 //#define ENABLE_EVENT_LOG_ 1
 //
 //we should always use this buffer for transactions and correct local rollback
@@ -6053,7 +6050,7 @@ void replay(bool failed, Domain *locDom, int myRank, int numProcs) {
     int min_iter = *std::min_element(peer_iters.begin(), peer_iters.end());
 
 
-    const bool global = (LOG_BFR_DEPTH == 0) || ((LOG_BFR_DEPTH > 0) && (max_iter % CKPT_STEP > LOG_BFR_DEPTH));
+    int global = (LOG_BFR_DEPTH == 0) || ((LOG_BFR_DEPTH > 0) && (max_iter % CKPT_STEP > LOG_BFR_DEPTH));
 
     if (myRank == 0) {
         for (int i=0; i<numProcs; i++) {
@@ -6439,8 +6436,15 @@ int main(int argc, char *argv[])
         end_it = MPI_Wtime();
         if (!NO_MAMMUT) {mammut::energy::Joules joules = Config::counter->getJoules();
             //total_joules += joules;
-            log_joules[locDom->cycle] = joules;
-            log_times[locDom->cycle] = end_it - start_it;
+            int global = (LOG_BFR_DEPTH == 0);
+            if (!global) {
+                log_joules[locDom->cycle] = joules;
+                log_times[locDom->cycle] = end_it - start_it;
+            }
+            else {
+                log_joules[locDom->cycle] += joules;
+                log_times[locDom->cycle] += end_it - start_it;
+            }
         }
 #if LULESH_SHOW_PROGRESS
       //if (myRank == 0) {

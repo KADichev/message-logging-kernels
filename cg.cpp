@@ -23,6 +23,7 @@ int EVENT_LOGGER;
 #include <math.h>
 #define max(a,b) ((a>b) ? (a) : (b))
 #define min(a,b) ((a<b) ? (a) : (b))
+static double start_it;
 static int max_iter = 0;
 static bool post_failure = false;
 static bool post_failure_sync = false;
@@ -64,9 +65,6 @@ static int KILL_PHASE;
 //#define SHIFT 1500
 
 #define NZ  NA*(NONZER+1)*(NONZER+1)+NA*(NONZER+2)+NONZER
-
-#define CKPT_STEP 75
-#define LOG_BFR_DEPTH 75
 
 /* common /partit_size/ */
 typedef int boolean;
@@ -1018,7 +1016,7 @@ void replay(double x[], double z[], double p[], double q[], double r[], double w
         min_iter = min(min_iter, peer_iters[i]);
     }
 
-    const bool global = (LOG_BFR_DEPTH == 0) || ((LOG_BFR_DEPTH > 0) && (max_iter % CKPT_STEP > LOG_BFR_DEPTH));
+    int global = (LOG_BFR_DEPTH == 0) || ((LOG_BFR_DEPTH > 0) && (max_iter % CKPT_STEP > LOG_BFR_DEPTH));
 
     if (failed) {
         if (global) {
@@ -1224,14 +1222,13 @@ void conj_grad (int colidx[], int rowstr[], double x[], double z[], double a[], 
 
     rho = sum;
 
+
+
 cg_loop_start:
 
     for (/* starting point depends on stage*/; cgit <  CGITMAX; cgit++) {
-        if (me == FAILED_PROC) {
-            printf("Rank %d in iter %d\n", me, cgit);
-        }
+        start_it = MPI_Wtime();
         Config::counter->reset();
-        double start_it = MPI_Wtime();
 
         if (post_failure) {
             if (post_failure_sync) {
@@ -1509,8 +1506,20 @@ obtain_rho_label:
         double end_it = MPI_Wtime();
         mammut::energy::Joules joules = Config::counter->getJoules();
         //total_joules += joules;
-        log_joules[cgit] = joules;
-        log_times[cgit] = end_it - start_it;
+        int global = (LOG_BFR_DEPTH == 0) || ((LOG_BFR_DEPTH > 0) && (max_iter % CKPT_STEP > LOG_BFR_DEPTH));
+        if (outer_iter == KILL_OUTER_ITER) {
+            if (!global) {
+                log_joules[cgit] = joules;
+                log_times[cgit] = end_it - start_it;
+            }
+            else {
+                log_joules[cgit] += joules;
+                log_times[cgit] += end_it - start_it;
+            }
+            if (me == FAILED_PROC) {
+                printf("Rank %d in iter %d with log_times = %lf\n", me, cgit, log_times[cgit]);
+            }
+        }
 
 #ifdef DEBUG_ITER_COUNT
         fprintf (iter_out, "%d-|\n",me);

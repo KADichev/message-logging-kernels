@@ -10,6 +10,7 @@ mammut::energy::Counter* Config::counter;
 mammut::energy::Energy*  Config::energy;
 mammut::task::ProcessHandler * Config::process;
 mammut::Mammut Config::m;
+extern bool global;
 
 void init_mammut() {
 
@@ -188,28 +189,27 @@ void log_stats(double *log_joules, double * log_times, int iter, int kill_iter, 
         all_joules = (double *) malloc(sizeof(double)*size*iter);
         all_times = (double *) malloc(sizeof(double)*size*iter);
     }
+    printf("Rank %d: before 2 gathers log_times[2] = %lf, log_times[3] = %lf\n", me, log_times[2], log_times[3]);
     MPI_Gather(&log_joules[0], iter, MPI_DOUBLE, all_joules, iter, MPI_DOUBLE, 0, world);
     MPI_Gather(&log_times[0], iter, MPI_DOUBLE, all_times, iter, MPI_DOUBLE, 0, world);
+    if (me == 0) printf("Rank %d: after 2 gathers all_times[3] = \n", me, all_times[3]);
 
     if (me == 0) {
         printf("DEBUG: rnak 0 niter = %d, nprocs = %d\n", iter, size);
-        for (int i=0; i<kill_iter; i++) {
-            double tmp_sum = 0.;
-            double tmp_joul = 0.;
-            for (int j=0; j<size; j++) {
-                if (j != failed_proc) {
-                    tmp_sum += all_times[iter*j+i];
-                    tmp_joul += all_joules[iter*j+i];
+        int global = (LOG_BFR_DEPTH == 0) ;
+        if (!global) {
+            for (int i=0; i<kill_iter; i++) {
+                double tmp_sum = 0.;
+                double tmp_joul = 0.;
+                for (int j=0; j<size; j++) {
+                    if (j != failed_proc) {
+                        tmp_sum += all_times[iter*j+i];
+                        tmp_joul += all_joules[iter*j+i];
+                    }
                 }
-                else { // j == FAILED_PROC
-                    // ad to failed process the recovery iterations as
-                    // part of the failed iteration
-                    all_times[iter*j+kill_iter] += all_times[iter*j+i];
-                    all_joules[iter*j+kill_iter] += all_joules[iter*j+i];
-                }
+                all_times[failed_proc*iter+i] += tmp_sum/(size-1);
+                all_joules[failed_proc*iter+i] += tmp_joul/(size-1);
             }
-            all_times[failed_proc*iter+i] = tmp_sum/(size-1);
-            all_joules[failed_proc*iter+i] = tmp_joul/(size-1);
         }
 
         std::ofstream f;

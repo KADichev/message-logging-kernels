@@ -13,7 +13,6 @@ class Config {
         static mammut::task::ProcessHandler * process;
         static mammut::Mammut m;
 };
-
 static double fraction = 1.0;
 
 void init_mammut();
