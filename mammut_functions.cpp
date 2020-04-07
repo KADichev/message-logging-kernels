@@ -203,19 +203,27 @@ void log_stats(double *log_joules, double * log_times, int iter, int kill_iter, 
     MPI_Gather(log_times, iter, MPI_DOUBLE, all_times, iter, MPI_DOUBLE, 0, world);
 
     if (me == 0) {
-        int global = (LOG_BFR_DEPTH == 0) ;
-        if (!global) {
-            for (int i=0; i<kill_iter; i++) {
-                double tmp_sum = 0.;
-                double tmp_joul = 0.;
-                for (int j=0; j<size; j++) {
-                    if (j != failed_proc) {
-                        tmp_sum += all_times[iter*j+i];
-                        tmp_joul += all_joules[iter*j+i];
-                    }
+        // make sure you add
+        // an approximation of what the failed process wasted
+        // before the failure (by averaging others)
+        // do this both for global and local rollback
+        for (int i=0; i<kill_iter; i++) {
+            double tmp_sum = 0.;
+            double tmp_joul = 0.;
+            for (int j=0; j<size; j++) {
+                if (j != failed_proc) {
+                    tmp_sum += all_times[iter*j+i];
+                    tmp_joul += all_joules[iter*j+i];
                 }
+            }
+            int global = (LOG_BFR_DEPTH == 0);
+            if (!global) {
                 all_times[failed_proc*iter+i] += tmp_sum/(size-1);
                 all_joules[failed_proc*iter+i] += tmp_joul/(size-1);
+            }
+            else {
+                all_times[failed_proc*iter+i] += tmp_sum/(2.*(size-1));
+                all_joules[failed_proc*iter+i] += tmp_joul/(2.*(size-1));
             }
         }
 

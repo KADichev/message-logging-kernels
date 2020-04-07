@@ -245,11 +245,11 @@ static int MPIX_Comm_replace(MPI_Comm comm, MPI_Comm *newcomm)
         }
         /* We handle failures during this function ourselves... */
         MPI_Comm_set_errhandler( scomm, MPI_ERRORS_RETURN );
-  //      MPI_Info info;
-  //      MPI_Info_create(&info);
-  //      MPI_Info_set(info, "host", "kos1");
+        MPI_Info info;
+        MPI_Info_create(&info);
+        MPI_Info_set(info, "host", "kos1");
   //      MPI_Info_set(info, "ompi_param", "btl_tcp_if_include eno1");
-        rc = MPI_Comm_spawn(gargv[0], &gargv[1], nd, MPI_INFO_NULL,
+        rc = MPI_Comm_spawn(gargv[0], &gargv[1], nd, info,
                             0, scomm, &icomm, MPI_ERRCODES_IGNORE);
         flag = (MPI_SUCCESS == rc);
         MPIX_Comm_agree(scomm, &flag);

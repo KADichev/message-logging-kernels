@@ -252,7 +252,10 @@ if( comm == MPI_COMM_NULL ) { /* am I a new process? */
     MPI_Comm_set_errhandler( scomm, MPI_ERRORS_RETURN );
 
     printf("Rank %d: about to respawn someone\n", rank);
-    rc = MPI_Comm_spawn(gargv[0], &gargv[1], nd, MPI_INFO_NULL,
+    MPI_Info info;
+    MPI_Info_create(&info);
+    MPI_Info_set(info,"host","kos0");
+    rc = MPI_Comm_spawn(gargv[0], &gargv[1], nd, info,
                         0, scomm, &icomm, MPI_ERRCODES_IGNORE);
     printf("Rank %d: after respawn someone\n", rank);
     flag = (MPI_SUCCESS == rc);
@@ -666,7 +669,6 @@ do_sor:
     //}
 
     //free(om); <= SEG FAULT
-    std::cout << "Rank: " << rank << "before free bckpt" << std::endl;
     free(bckpt);
 
 
@@ -944,7 +946,6 @@ int main( int argc, char* argv[] )
         MPI_Comm_size(MPI_COMM_WORLD, &size);
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         int pid = getpid();
-        std::cout << "Rank " << rank << " PID: " << pid << std::endl;
     }
     else {
         printf("Spawned\n");
@@ -986,7 +987,7 @@ int main( int argc, char* argv[] )
     //free(border);
     //free(peer_iters);
 
-    std::cout << "Rank " << rank << "calls finalize" << std::endl;
+    MPI_Barrier(MPI_COMM_WORLD);
     MPI_Finalize();
     return 0;
 }

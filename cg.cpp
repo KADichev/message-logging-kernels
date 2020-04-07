@@ -241,11 +241,10 @@ static int MPIX_Comm_replace(MPI_Comm comm, MPI_Comm *newcomm)
         }
         /* We handle failures during this function ourselves... */
         MPI_Comm_set_errhandler( scomm, MPI_ERRORS_RETURN );
-  //      MPI_Info info;
-  //      MPI_Info_create(&info);
-  //      MPI_Info_set(info, "host", "kos1");
-  //      MPI_Info_set(info, "ompi_param", "btl_tcp_if_include eno1");
-        rc = MPI_Comm_spawn(gargv[0], &gargv[1], nd, MPI_INFO_NULL,
+        MPI_Info info;
+        MPI_Info_create(&info);
+        MPI_Info_set(info, "host", "kos0");
+        rc = MPI_Comm_spawn(gargv[0], &gargv[1], nd, info,
                             0, scomm, &icomm, MPI_ERRCODES_IGNORE);
         flag = (MPI_SUCCESS == rc);
         MPIX_Comm_agree(scomm, &flag);
@@ -389,7 +388,7 @@ void writevec(double z[], double p[], double r[], double q[], double rho) {
     timer_start(1);
    char filename[16];
    int dim1 = lastcol-firstcol+1;
-   sprintf (filename, "x-%d.dat", me);
+   sprintf (filename, "/tmp/x-%d.dat", me);
    FILE * file = fopen(filename, "w");
    if (file == NULL) {
      printf("Can't write backup file\n");
@@ -409,7 +408,7 @@ void readvec (double z[], double p[], double r[], double q[], double *rho) {
    timer_start(1);
    char filename[16];
    int dim1 = lastcol-firstcol+1;
-   sprintf (filename, "x-%d.dat", me);
+   sprintf (filename, "/tmp/x-%d.dat", me);
    FILE * file = fopen(filename, "r");
    fscanf (file, "(%d,%d,%lf)\n", &outer_iter, &cgit, rho);
    //printf("Just read rho = %12.12e\n", rho);
@@ -1509,9 +1508,6 @@ obtain_rho_label:
             else {
                 log_joules[cgit] += joules;
                 log_times[cgit] += end_it - start_it;
-            }
-            if (me == FAILED_PROC) {
-                printf("Rank %d in iter %d with log_times = %lf\n", me, cgit, log_times[cgit]);
             }
         }
 
