@@ -6011,10 +6011,10 @@ void DumpDomain(Domain *domain, int myRank, int numProcs, char readOrWrite)
 {
    char baseName[64] ;
    char meshName[64] ;
-   sprintf(baseName, "sedov.sami") ;
+   sprintf(baseName, "/tmp/sedov.sami") ;
 
    if (myRank == 0) {
-      sprintf(meshName, "sedov.sami") ;
+      sprintf(meshName, "/tmp/sedov.sami") ;
    }
    else {
       sprintf(meshName, "%s.%d", baseName, myRank) ;
@@ -6202,9 +6202,9 @@ int main(int argc, char *argv[])
   int do_recover = 0;
 
 
-  init_mammut();
 
   MPI_Init(&argc, &argv) ;
+  init_mammut();
   gargv = argv;
 
 

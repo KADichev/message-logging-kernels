@@ -55,9 +55,9 @@ void set_max_freq_mammut(int cpu, int rank) {
 */
 int main(int argc, char **argv) {
 
-    init_mammut();
 
     MPI_Init(&argc, &argv);
+    init_mammut();
     int rank, size;
     MPI_Comm world;
     world = MPI_COMM_WORLD;

@@ -15,7 +15,7 @@
 #endif
 
 #define MAX_ITER 20
-#define FAILED_RANK 2
+#define FAILED_RANK 1
 /**
  * Helpers macro to compute the displacement of the
  * buffers for the north and south neighbors.

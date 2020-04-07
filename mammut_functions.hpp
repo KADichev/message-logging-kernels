@@ -12,6 +12,7 @@ class Config {
         static mammut::energy::Energy*  energy;
         static mammut::task::ProcessHandler * process;
         static mammut::Mammut m;
+        static mammut::energy::CounterCpus* counterCpus;
 };
 static double fraction = 1.0;
 

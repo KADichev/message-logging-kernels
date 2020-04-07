@@ -389,7 +389,7 @@ void writevec(double z[], double p[], double r[], double q[], double rho) {
     timer_start(1);
    char filename[16];
    int dim1 = lastcol-firstcol+1;
-   sprintf (filename, "/tmp/x-%d.dat", me);
+   sprintf (filename, "x-%d.dat", me);
    FILE * file = fopen(filename, "w");
    if (file == NULL) {
      printf("Can't write backup file\n");
@@ -409,12 +409,11 @@ void readvec (double z[], double p[], double r[], double q[], double *rho) {
    timer_start(1);
    char filename[16];
    int dim1 = lastcol-firstcol+1;
-   sprintf (filename, "/tmp/x-%d.dat", me);
+   sprintf (filename, "x-%d.dat", me);
    FILE * file = fopen(filename, "r");
    fscanf (file, "(%d,%d,%lf)\n", &outer_iter, &cgit, rho);
    //printf("Just read rho = %12.12e\n", rho);
    for (int i=1; i<=dim1; i++) {
-     //printf("before READ x[%d] = %lf\n", colidx[i], x[colidx[i]]);
      fscanf (file, "(%lf,%lf,%lf,%lf) ", &z[i], &p[i], &r[i], &q[i]);
      //printf("after READ x[%d] = %lf\n", colidx[i], x[colidx[i]]);
    }
@@ -971,11 +970,6 @@ void setup_submatrix_info(int * reduce_exch_proc, int * reduce_send_starts, int 
   }
   exch_recv_length = lastcol - firstcol + 1;
 
-
-  for (int i=0; i<l2npcols; i++) {
-      printf("Rank %d: reduce_exch_proc[%d] = %d\n", me, i, reduce_exch_proc[i]);
-  }
-  printf("Rank %d: exch_proc = %d\n", me, exch_proc);
 }
 
 void replay(double x[], double z[], double p[], double q[], double r[], double w[],  bool failed, int reduce_exch_proc[], int reduce_send_starts[], int reduce_send_lengths[], double * rho) {
@@ -1620,6 +1614,7 @@ obtain_rho_label:
     if( me == root ) *rnorm = sqrt( d );
 
 
+    if (outer_iter == KILL_OUTER_ITER)
     log_stats(&log_joules[0], &log_times[0], CGITMAX, KILL_INNER_ITER, nprocs, FAILED_PROC, world, me);
 }
 
@@ -1635,10 +1630,10 @@ int main(int argc, char **argv) {
   timer_clear(6);
   timer_clear(7);
 
-  init_mammut();
-
  //if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT) exit(1);
   MPI_Init(&argc, &argv);
+  init_mammut();
+
   gargv = argv;
   
 
@@ -1655,7 +1650,6 @@ int main(int argc, char **argv) {
        *          * a copy of MPI_COMM_WORLD */
       MPI_Comm_dup( MPI_COMM_WORLD, &world );
   } else {
-      printf("spawned ...\n");
       //allowed_to_kill = 0;
 
       /* I am a spare, lets get the repaired world */

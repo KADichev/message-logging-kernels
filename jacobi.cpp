@@ -385,7 +385,12 @@ int jacobi_cpu(TYPE* matrix, int NB, int MB, int P, int Q, MPI_Comm comm, TYPE e
     double sum = 0.;
     double start_this_it;
     int size, ew_rank, ew_size, ns_rank, ns_size;
-    TYPE *om, *nm, *tmpm, *send_east, *send_west, *recv_east, *recv_west, diff_norm;
+    TYPE *om, *nm, *tmpm, diff_norm;
+
+    TYPE send_east[MB];
+    TYPE send_west[MB];
+    TYPE recv_east[MB];
+    TYPE recv_west[MB];
     start = 0.;
     double twf=0; /* timings */
     MPI_Errhandler errh;
@@ -418,10 +423,6 @@ int jacobi_cpu(TYPE* matrix, int NB, int MB, int P, int Q, MPI_Comm comm, TYPE e
     nm = (TYPE*)malloc(sizeof(TYPE)*(NB+2) * (MB+2));
     //nm_tmp = (TYPE*)malloc(sizeof(TYPE)*(NB+2) * (MB+2));
     //om_tmp = (TYPE*)malloc(sizeof(TYPE)*(NB+2) * (MB+2));
-    send_east = (TYPE*)malloc(sizeof(TYPE) * MB);
-    send_west = (TYPE*)malloc(sizeof(TYPE) * MB);
-    recv_east = (TYPE*)malloc(sizeof(TYPE) * MB);
-    recv_west = (TYPE*)malloc(sizeof(TYPE) * MB);
 
     /**
      * Prepare the space for the buddy ckpt.
@@ -458,12 +459,13 @@ restart:  /* This is my restart point */
     //set_12core_max_freq(12, 2400000);
 
     for (; iteration<MAX_ITER; iteration++) {
-        //printf("Rank %d: start iteration %d, max_iter = %d last_dead = %d\n", rank, iteration, max_it, last_dead);
+        printf("Rank %d: start iteration %d, max_iter = %d last_dead = %d\n", rank, iteration, max_it, last_dead);
 
 
         if (!NO_MAMMUT) {
             start_it = MPI_Wtime();
-            Config::counter->reset();
+            //Config::counter->reset();
+            Config::counterCpus->reset();
         }
 
         // super important to not deadlock
@@ -544,7 +546,7 @@ restart:  /* This is my restart point */
         end_exch = MPI_Wtime();
         total_wait += (end_exch-start_exch);
 
-        //printf("Rank %d done with sends/recvs at iteration %d\n", rank, iteration);
+        printf("Rank %d done with sends/recvs at iteration %d\n", rank, iteration);
         for(i = 0; i < MB; i++) {
             om[(i+1)*(NB+2)         ] = recv_west[i];
             om[(i+1)*(NB+2) + NB + 1] = recv_east[i];
@@ -628,7 +630,8 @@ do_sor:
         int global = (LOG_BFR_DEPTH == 0);
         if (!NO_MAMMUT) {
             end_it = MPI_Wtime();
-            mammut::energy::Joules joules = Config::counter->getJoules();
+            //mammut::energy::Joules joules = Config::counter->getJoules();
+            mammut::energy::Joules joules = Config::counterCpus->getJoulesCpuAll();
             total_joules += joules;
             //std::cout << "Rank " << rank << "IT  " << iteration << "end-it - start-it" << (end_it -start_it) << std::endl;
             if (!global) {
@@ -663,10 +666,7 @@ do_sor:
     //}
 
     //free(om); <= SEG FAULT
-    free(send_west);
-    free(send_east);
-    free(recv_west);
-    free(recv_east);
+    std::cout << "Rank: " << rank << "before free bckpt" << std::endl;
     free(bckpt);
 
 
@@ -943,6 +943,11 @@ int main( int argc, char* argv[] )
     if( MPI_COMM_NULL == parent ) {
         MPI_Comm_size(MPI_COMM_WORLD, &size);
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        int pid = getpid();
+        std::cout << "Rank " << rank << " PID: " << pid << std::endl;
+    }
+    else {
+        printf("Spawned\n");
     }
 
     //printf("Rank %d --> p = %d, q = %d, NB = %d, MB = %d, KILL_ITER = %d\n", rank, P, Q, NB, MB, KILL_ITER);
@@ -981,8 +986,7 @@ int main( int argc, char* argv[] )
     //free(border);
     //free(peer_iters);
 
-    //MPI_Barrier(MPI_COMM_WORLD);
-    //std::cout << "Rank " << rank << "calls finalize" << std::endl;
+    std::cout << "Rank " << rank << "calls finalize" << std::endl;
     MPI_Finalize();
     return 0;
 }

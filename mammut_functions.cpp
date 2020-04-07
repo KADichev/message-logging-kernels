@@ -7,10 +7,10 @@ mammut::task::TasksManager *Config::pm;
 mammut::topology::VirtualCore * Config::virtualCore;
 mammut::topology::Topology* Config::topology;
 mammut::energy::Counter* Config::counter;
+mammut::energy::CounterCpus* Config::counterCpus;
 mammut::energy::Energy*  Config::energy;
 mammut::task::ProcessHandler * Config::process;
 mammut::Mammut Config::m;
-extern bool global;
 
 void init_mammut() {
 
@@ -25,6 +25,7 @@ void init_mammut() {
         Config::process->getVirtualCoreId(vcid);
         Config::virtualCore = Config::topology->getVirtualCore(vcid);
         Config::counter = Config::energy->getCounter();
+        Config::counterCpus = (mammut::energy::CounterCpus *) Config::energy->getCounter(mammut::energy::COUNTER_CPUS);
         if (Config::counter == NULL) {
             fprintf(stderr, "Mammut does not seem to initialise okay\n");
             exit(-1);
@@ -36,9 +37,10 @@ void init_mammut() {
 #ifdef SCALE_MOD_DURING_REC_
         setClockModulation(100.);
 #endif // SCALE_MOD_DURING_REC_
-#ifdef SCALE_FREQ_DURING_REC_
+        // ALWAYS SET THIS TO MAX FREQUENCY AT THE START !!!
+//#ifdef SCALE_FREQ_DURING_REC_
         set_frequency(2400000);
-#endif // SCALE_FREQ_DURING_REC_
+//#endif // SCALE_FREQ_DURING_REC_
     }
 
 }
@@ -77,10 +79,16 @@ int get_socket(int rank, int size) {
 void set_frequency(double frequency){
     //Topology* t_handler = m.getInstanceTopology();
     //VirtualCore* vc = t_handler->getVirtualCore(static_cast<VirtualCoreId>(core_id));
-    printf("Set frequency -> %lf\n", frequency);
     mammut::cpufreq::Domain* d = Config::cpufreq->getDomain(Config::virtualCore);
     d->setGovernor(mammut::cpufreq::GOVERNOR_USERSPACE);
-    d->setFrequencyUserspace(frequency);
+    int iFreq = d->setFrequencyUserspace(frequency);
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    char hostname[64];
+    int resultlen;
+    MPI_Get_processor_name(hostname, &resultlen);
+
+    printf("Setting f %lf on host %s, core %u, rank %d ->%d\n", frequency, hostname, Config::virtualCore->getVirtualCoreId(), rank, iFreq);
 }
 
 void setClockModulation(double perc) {
@@ -183,19 +191,18 @@ void down_up(MPI_Comm world, int iteration, int rank, int size) {
 void log_stats(double *log_joules, double * log_times, int iter, int kill_iter, int size, int failed_proc, MPI_Comm world, int me) {
     // POST_PROCESSING
     
-    double *all_joules;
-    double *all_times;
+    double *all_joules = NULL;
+    double *all_times = NULL;
     if (me == 0) {
         all_joules = (double *) malloc(sizeof(double)*size*iter);
         all_times = (double *) malloc(sizeof(double)*size*iter);
     }
-    printf("Rank %d: before 2 gathers log_times[2] = %lf, log_times[3] = %lf\n", me, log_times[2], log_times[3]);
-    MPI_Gather(&log_joules[0], iter, MPI_DOUBLE, all_joules, iter, MPI_DOUBLE, 0, world);
-    MPI_Gather(&log_times[0], iter, MPI_DOUBLE, all_times, iter, MPI_DOUBLE, 0, world);
-    if (me == 0) printf("Rank %d: after 2 gathers all_times[3] = \n", me, all_times[3]);
+    printf("Rank %d: will call gather with log_joules=%p, iter=%d, all_joules=%p\n", me, log_joules, iter, all_joules);
+    MPI_Barrier(world);
+    MPI_Gather(log_joules, iter, MPI_DOUBLE, all_joules, iter, MPI_DOUBLE, 0, world);
+    MPI_Gather(log_times, iter, MPI_DOUBLE, all_times, iter, MPI_DOUBLE, 0, world);
 
     if (me == 0) {
-        printf("DEBUG: rnak 0 niter = %d, nprocs = %d\n", iter, size);
         int global = (LOG_BFR_DEPTH == 0) ;
         if (!global) {
             for (int i=0; i<kill_iter; i++) {
