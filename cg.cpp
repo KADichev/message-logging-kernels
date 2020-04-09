@@ -31,7 +31,7 @@ static int FAILED_PROC;
 static int KILL_OUTER_ITER;
 static int KILL_INNER_ITER;
 static int KILL_PHASE;
-#define CGITMAX 25
+#define CGITMAX 50
 // from S class
 //#define NONZER 7
 #define NITER 2

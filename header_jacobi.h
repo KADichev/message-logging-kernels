@@ -14,7 +14,7 @@
 #define MPI_TYPE   MPI_FLOAT
 #endif
 
-#define MAX_ITER 20
+#define MAX_ITER 25
 #define FAILED_RANK 2
 /**
  * Helpers macro to compute the displacement of the

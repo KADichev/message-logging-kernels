@@ -486,7 +486,7 @@ restart:  /* This is my restart point */
             //MPI_Comm_split(world, color, 1, &newcomm);
             //printf("Rank %d: after split\n", rank);
             //MPI_Comm_free(&newcomm);
-            //printf("Rank %d: after replay at iteration %d\n", rank, iteration);
+            printf("Rank %d: after replay at iteration %d\n", rank, iteration);
 
 
         }
@@ -549,7 +549,7 @@ restart:  /* This is my restart point */
         end_exch = MPI_Wtime();
         total_wait += (end_exch-start_exch);
 
-        printf("Rank %d done with sends/recvs at iteration %d\n", rank, iteration);
+        //printf("Rank %d done with sends/recvs at iteration %d\n", rank, iteration);
         for(i = 0; i < MB; i++) {
             om[(i+1)*(NB+2)         ] = recv_west[i];
             om[(i+1)*(NB+2) + NB + 1] = recv_east[i];
@@ -669,14 +669,13 @@ do_sor:
     //}
 
     //free(om); <= SEG FAULT
-    free(bckpt);
+    //free(bckpt);
 
 
     log_stats(log_joules, log_times, iteration, KILL_ITER, size, FAILED_RANK, world, rank);
     delete log_joules;
     delete log_times;
 
-    MPI_Barrier(world);
     return iteration;
 }
 
