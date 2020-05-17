@@ -1,6 +1,9 @@
-#include <unistd.h>
 #include "mammut_functions.hpp"
+#include <unistd.h>
+#include <iostream>
 #include "mpi.h"
+
+#define LOGGING_PROC 0
 
 mammut::cpufreq::CpuFreq* Config::cpufreq;
 mammut::task::TasksManager *Config::pm;
@@ -34,9 +37,9 @@ void init_mammut() {
         set_12core_max_freq(12, 3199999);
 #endif // SCALE_FREQ_DURING_REC_PSTATE_
 
-#ifdef SCALE_MOD_DURING_REC_
+//#ifdef SCALE_MOD_DURING_REC_
         setClockModulation(100.);
-#endif // SCALE_MOD_DURING_REC_
+//#endif // SCALE_MOD_DURING_REC_
         // ALWAYS SET THIS TO MAX FREQUENCY AT THE START !!!
 //#ifdef SCALE_FREQ_DURING_REC_
         set_frequency(2400000);
@@ -193,16 +196,17 @@ void log_stats(double *log_joules, double * log_times, int iter, int kill_iter, 
     
     double *all_joules = NULL;
     double *all_times = NULL;
-    if (me == 0) {
+    if (me == LOGGING_PROC) {
         all_joules = (double *) malloc(sizeof(double)*size*iter);
         all_times = (double *) malloc(sizeof(double)*size*iter);
     }
     printf("Rank %d: will call gather with log_joules=%p, iter=%d, all_joules=%p\n", me, log_joules, iter, all_joules);
     MPI_Barrier(world);
-    MPI_Gather(log_joules, iter, MPI_DOUBLE, all_joules, iter, MPI_DOUBLE, 0, world);
-    MPI_Gather(log_times, iter, MPI_DOUBLE, all_times, iter, MPI_DOUBLE, 0, world);
+    MPI_Gather(log_joules, iter, MPI_DOUBLE, all_joules, iter, MPI_DOUBLE, LOGGING_PROC, world);
+    MPI_Gather(log_times, iter, MPI_DOUBLE, all_times, iter, MPI_DOUBLE, LOGGING_PROC, world);
+    printf("Rank %d: after call gather with log_joules=%p, iter=%d, all_joules=%p\n", me, log_joules, iter, all_joules);
 
-    if (me == 0) {
+    if (me == LOGGING_PROC) {
         // make sure you add
         // an approximation of what the failed process wasted
         // before the failure (by averaging others)
@@ -227,16 +231,23 @@ void log_stats(double *log_joules, double * log_times, int iter, int kill_iter, 
             }
         }
 
-        std::ofstream f;
-        f.open("stats.csv");
-        f << "Iteration,Rank,Duration,Joules\n";
-        f << "# " << iter << "," << size << "," << kill_iter << "\n";
-        for (int i=0; i<iter; i++) {
-            for (int j=0; j<size; j++) {
-                if (all_times[iter*j+i] == 0.) {printf("Fuck, 0. at %d-%d\n", i,j);}
-                f <<  i << "," << j << "," << all_times[iter*j+i] << "," << all_joules[iter*j+i] << std::endl;
+        //FILE * f = fopen("stats.csv", "w");
+        std::ofstream f("stats.csv", std::ios::out);
+        //if (f != NULL) {
+        if (f.is_open()) {
+            f << "Iteration,Rank,Duration,Joules\n";
+            f << "# " << iter << "," << size << "," << kill_iter << "\n";
+            //printf("# %d,%d,%d\n", iter, size, kill_iter);
+            for (int i=0; i<iter; i++) {
+                for (int j=0; j<size; j++) {
+                    //if (all_times[iter*j+i] == 0.) {printf("Fuck, 0. at %d-%d\n", i,j);}
+                    f <<  i << "," << j << "," << all_times[iter*j+i] << "," << all_joules[iter*j+i] << std::endl;
+                    //printf("%d,%d,%lf,%lf\n",i,j,all_times[iter*j+i],all_joules[iter*j+i]);
+                }
             }
+            f.close();
+            //fclose(f);
         }
-        f.close();
+        //
     }
 }

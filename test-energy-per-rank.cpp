@@ -2,10 +2,9 @@
 #include <limits.h>
 
 #include "mpi.h"
-#include <mammut/mammut.hpp>
 #include "mammut_functions.hpp"
 #define DIM 128
-#define PINGPONGS 1000000
+#define PINGPONGS 10000000
 
 
 double test_ping_pong(MPI_Comm world, int rank, int size) {
@@ -108,21 +107,20 @@ int main(int argc, char **argv) {
     recovery_start_time = MPI_Wtime();
     Config::counter->reset();
 
-    if (rank == 0) {
-        sleep(5);
-    }
-    else {
 #ifdef SCALE_MOD_DURING_REC_
         setClockModulation(6.25);
 #endif // SCALE_MOD_DURING_REC_
 #ifdef SCALE_FREQ_DURING_REC_
         set_frequency(1200000);
 #endif // SCALE_FREQ_DURING_REC_
-    }
 #ifdef SCALE_FREQ_DURING_REC_PSTATE_
     set_12core_max_freq(12, 1200000);
 #endif 
     //if (rank == 0) sleep(5);
+
+    if (rank == 0) {
+        sleep(5);
+    }
 
     MPI_Barrier(world);
     recovery_end_time = MPI_Wtime();

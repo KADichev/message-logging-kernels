@@ -70,7 +70,6 @@ static jmp_buf stack_jmp_buf;
 void replay(MPI_Comm comm, double * matrix, int NB, int MB, int P, int Q, bool failed);
 int send_wrapper(const void *buf, int count, MPI_Datatype datatype, int dest, int tag,
                   MPI_Comm comm, MPI_Request * request, int replay_it, int stage);
-bool am_i_involved(int ns_rank, int ew_rank, int rvrs_it, int P, int Q, int NB, int MB);
 //int do_recovering_jacobi(int NB, int MB, int P, MPI_Comm comm, int failed_iteration, int failed_rank, TYPE *matrix, TYPE *nm);
 
 
@@ -108,28 +107,6 @@ void print_waits(double *total_waits, double *total_sors, int size, int P, int Q
         free(total_sors);
     }
 }
-
-
-/* FORMULA:
-   involved(rank, failed, failed_it) :=
-   (failed_it % CP_INT ≥ Nx∗(|X(rank)−X(failed)|−1) (2) AND
-   failed_it % CP_INT ≥ Ny ∗(|Y(rank)−Y(failed)|−1)
-   )
-    */
-bool am_i_involved(int ns_rank, int ew_rank, int rvrs_it, int P, int Q, int NB, int MB) {
-
-    // translate failed_rank on 2D map
-    int failed_ns = FAILED_RANK / P;
-    int failed_ew =  FAILED_RANK % P;
-    //printf("DEBUG: failed_ns = %d, failed_ew = %d\n", failed_ns, failed_ew);
-    //printf("%d - %d <= %d/%d+1 && (%d - %d) <= %d/%d+1",ns_rank, failed_ns, rvrs_it, elems_ns, ew_rank, failed_ew, rvrs_it, elems_ew);
-    bool termX = (rvrs_it >= ((abs(ew_rank-failed_ew) - 1) * MB));
-    bool termY = (rvrs_it >= ((abs(ns_rank-failed_ns) - 1) * NB));
-    return termX && termY;
-}
-
-
-
 
 
 /* world will swap between worldc[0] and worldc[1] after each respawn */
@@ -347,27 +324,32 @@ return MPI_SUCCESS;
 * We are using a Successive Over Relaxation (SOR)
 * http://www.physics.buffalo.edu/phy410-505/2011/topic3/app1/index.html
 */
-TYPE SOR1( TYPE* nm, TYPE* om,
-       int nb, int mb )
+TYPE SOR1(int rank, TYPE* nm, TYPE* om,
+       int nb, int mb)
 {
-TYPE norm = 0.0;
-TYPE _W = 2.0 / (1.0 + M_PI / (TYPE)nb);
-int i, j, pos;
+    TYPE norm = 0.0;
+    TYPE _W = 2.0 / (1.0 + M_PI / (TYPE)nb);
+    int i, j, pos;
 
-TYPE dumb = 0.0;
-for(j = 0; j < mb; j++) {
-    for(i = 0; i < nb; i++) {
-        pos = 1 + i + (j+1) * (nb+2);
-        dumb += om[pos];
-        nm[pos] = (1 - _W) * om[pos] +
-                  _W / 4.0 * (nm[pos - 1] +
-                              om[pos + 1] +
-                              nm[pos - (nb+2)] +
-                              om[pos + (nb+2)]);
-        norm += (nm[pos] - om[pos]) * (nm[pos] - om[pos]);
+    //TYPE sum = 0.0;
+    for(j = 0; j < mb; j++) {
+        for(i = 0; i < nb; i++) {
+            pos = 1 + i + (j+1) * (nb+2);
+            //sum += nm[pos];
+
+            nm[pos] = (1 - _W) * om[pos] +
+                _W / 4.0 * (om[pos - 1] +
+                        om[pos + 1] +
+                        om[pos - (nb+2)] +
+                        om[pos + (nb+2)]);
+          //  if (nm[pos] > 1000.) {
+          //     printf("Rank %d: IN SOR1 and i=%d, j=%d,  with om[%d] = %lf, nm[%d] = %lf :  %lf  %lf  %lf %lf %lf\n", rank, i,j, pos, om[pos], pos, nm[pos], om[pos], om[pos-1],om[pos+1], om[pos-(nb+2)], om[pos+(nb+2)]);
+          //  }
+            norm += (nm[pos] - om[pos]) * (nm[pos] - om[pos]);
+        }
     }
-}
-return norm;
+    return norm;
+    //return sum;
 }
 
 int preinit_jacobi_cpu(void)
@@ -380,14 +362,14 @@ int jacobi_cpu(TYPE* matrix, int NB, int MB, int P, int Q, MPI_Comm comm, TYPE e
 
     init_mammut();
 
-    double * log_joules = new double[MAX_ITER];
-    double * log_times = new double[MAX_ITER];
+    double log_joules[MAX_ITER];
+    double log_times[MAX_ITER];
     for (int i=0; i<MAX_ITER; i++) {log_joules[i] = 0.; log_times[i] = 0.;}
     start_time = MPI_Wtime();
     int dbg_counter;
     double sum = 0.;
     double start_this_it;
-    int size, ew_rank, ew_size, ns_rank, ns_size;
+    int size;
     TYPE *om, *nm, *tmpm, diff_norm;
 
     TYPE send_east[MB];
@@ -424,6 +406,7 @@ int jacobi_cpu(TYPE* matrix, int NB, int MB, int P, int Q, MPI_Comm comm, TYPE e
     //printf("rank %d -- KILL_ITER = %d, allowed_to_kill = %d\n", rank, KILL_ITER, allowed_to_kill);
 
     nm = (TYPE*)malloc(sizeof(TYPE)*(NB+2) * (MB+2));
+    for (int i=0;i<(NB+2)*(MB+2); i++) nm[i] = 0.;
     //nm_tmp = (TYPE*)malloc(sizeof(TYPE)*(NB+2) * (MB+2));
     //om_tmp = (TYPE*)malloc(sizeof(TYPE)*(NB+2) * (MB+2));
 
@@ -442,10 +425,6 @@ restart:  /* This is my restart point */
     int do_recover = _setjmp(stack_jmp_buf);
 
     //printf("Rank %d: after setjmp\n", rank);
-    ew_size = P ;
-    ns_size = Q ;
-    ns_rank = rank / P;
-    ew_rank = rank % P;
     /* We set an errhandler on world, so that a failure is not fatal anymore. */
     MPI_Comm_set_errhandler( world, errh );
 
@@ -462,13 +441,13 @@ restart:  /* This is my restart point */
     //set_12core_max_freq(12, 2400000);
 
     for (; iteration<MAX_ITER; iteration++) {
-        printf("Rank %d: start iteration %d, max_iter = %d last_dead = %d\n", rank, iteration, max_it, last_dead);
+        //printf("Rank %d: start iteration %d, max_iter = %d last_dead = %d\n", rank, iteration, max_it, last_dead);
 
 
         if (!NO_MAMMUT) {
             start_it = MPI_Wtime();
-            //Config::counter->reset();
-            Config::counterCpus->reset();
+            Config::counter->reset();
+            //Config::counterCpus->reset();
         }
 
         // super important to not deadlock
@@ -521,11 +500,11 @@ restart:  /* This is my restart point */
         }
 
 
-        if( 0 != ns_rank ) {
+        if( P <= rank ) {
             MPI_Irecv( RECV_NORTH(om), NB, MPI_TYPE, rank - P, 0, world, &req[0]);
             send_wrapper( SEND_NORTH(om), NB, MPI_TYPE, rank - P, 0, world, &req[1], iteration, 0);
         }
-        if( (ns_size-1) != ns_rank ) {
+        if(  rank < (size-P)) {
             MPI_Irecv( RECV_SOUTH(om), NB, MPI_TYPE, rank + P, 0, world, &req[2]);
             send_wrapper( SEND_SOUTH(om), NB, MPI_TYPE, rank + P, 0, world, &req[3], iteration, 1);
         }
@@ -535,11 +514,12 @@ restart:  /* This is my restart point */
             send_east[i] = om[(i+1)*(NB+2) + NB + 0];  /* not the ghost region */
         }
 
-        if( (ew_size-1) != ew_rank ) {
+        if(rank % P != (P-1)) {
             MPI_Irecv( recv_east,      MB, MPI_TYPE, rank + 1, 0, world, &req[4]);
             send_wrapper( send_east,      MB, MPI_TYPE, rank + 1, 0, world, &req[5], iteration, 2);
         }
-        if( 0 != ew_rank ) {
+
+        if( rank % P != 0) {
             MPI_Irecv( recv_west,      MB, MPI_TYPE, rank - 1, 0, world, &req[6]);
             send_wrapper( send_west,      MB, MPI_TYPE, rank - 1, 0, world, &req[7], iteration, 3);
         }
@@ -573,15 +553,14 @@ do_sor:
          * Call the Successive Over Relaxation (SOR) method
          */
         double begin_sor1 = MPI_Wtime();
-        diff_norm = SOR1(nm, om, NB, MB);
+        diff_norm = SOR1(rank, nm, om, NB, MB);
         total_sor += MPI_Wtime()-begin_sor1;
-        //printf("STANDARD ITER: rank %d, diff_norm = %lf\n", rank, diff_norm);
+        if (rank == 0) printf("STANDARD ITER: rank %d, diff_norm = %lf\n", rank, diff_norm);
         SOR_updates++;
 
         //if(verbose)
         //printf("Rank %d norm %f at iteration %d - [0]=%.16lf, [1]=%.16lf, [2]=%.16lf\n", rank, diff_norm, iteration, om[0], om[5], om[10]);
-        //rc = MPI_Allreduce(MPI_IN_PLACE, &diff_norm, 1, MPI_TYPE, MPI_SUM,
-        //world);
+        //rc = MPI_Allreduce(MPI_IN_PLACE, &diff_norm, 1, MPI_TYPE, MPI_SUM, world);
 
         //if(0 == rank) {
         //printf("Rank %d: Iteration %4d norm %f time %lf\n", rank, iteration, sqrtf(diff_norm), MPI_Wtime()-start);
@@ -595,7 +574,7 @@ do_sor:
         }
         //MPI_Allreduce(MPI_IN_PLACE, &sum, 1, MPI_DOUBLE, MPI_SUM, world);
 
-        //if (0 == rank) printf("My norm: %f at end of iteration %d\n", sum, iteration);
+        if (0 == rank) printf("My norm: %lf at end of iteration %d\n", sum, iteration);
 
         tmpm = om; om = nm; nm = tmpm;  /* swap the 2 matrices */
 
@@ -633,8 +612,8 @@ do_sor:
         int global = (LOG_BFR_DEPTH == 0);
         if (!NO_MAMMUT) {
             end_it = MPI_Wtime();
-            //mammut::energy::Joules joules = Config::counter->getJoules();
-            mammut::energy::Joules joules = Config::counterCpus->getJoulesCpuAll();
+            mammut::energy::Joules joules = Config::counter->getJoules();
+            //mammut::energy::Joules joules = Config::counterCpus->getJoulesCpuAll();
             total_joules += joules;
             //std::cout << "Rank " << rank << "IT  " << iteration << "end-it - start-it" << (end_it -start_it) << std::endl;
             if (!global) {
@@ -673,8 +652,8 @@ do_sor:
 
 
     log_stats(log_joules, log_times, iteration, KILL_ITER, size, FAILED_RANK, world, rank);
-    delete log_joules;
-    delete log_times;
+    printf("Proc %d before del after log stats\n", rank);
+    printf("Proc %d after log stats\n", rank);
 
     return iteration;
 }
@@ -937,16 +916,14 @@ int main( int argc, char* argv[] )
 
 
     MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    int pid = getpid();
 
     parse_arguments(argc, argv);
 
     MPI_Comm_get_parent( &parent );
-    if( MPI_COMM_NULL == parent ) {
-        MPI_Comm_size(MPI_COMM_WORLD, &size);
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        int pid = getpid();
-    }
-    else {
+    if( MPI_COMM_NULL != parent ) {
         printf("Spawned\n");
     }
 
@@ -965,6 +942,7 @@ int main( int argc, char* argv[] )
     /* make sure we have some randomness */
     border = (TYPE*)malloc(sizeof(TYPE) * 2 * (NB + 2 + MB));
     om = (TYPE*)malloc(sizeof(TYPE) * (NB+2) * (MB+2));
+    for (int i=0;i<(NB+2)*(MB+2); i++) om[i] = 0.;
     if( MPI_COMM_NULL == parent ) {
         int seed = rank*NB*MB; srand(seed);
         generate_border(border, 2 * (NB + 2 + MB));
@@ -986,7 +964,7 @@ int main( int argc, char* argv[] )
     //free(border);
     //free(peer_iters);
 
-    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Barrier(world);
     MPI_Finalize();
     return 0;
 }
