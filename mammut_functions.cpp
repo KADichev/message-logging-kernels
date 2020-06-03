@@ -17,7 +17,6 @@ mammut::Mammut Config::m;
 
 void init_mammut() {
 
-    printf("Initialize Mammut ..\n");
     Config::topology = Config::m.getInstanceTopology();
     Config::energy = Config::m.getInstanceEnergy();
     Config::pm = Config::m.getInstanceTask();
@@ -42,31 +41,30 @@ void init_mammut() {
 //#endif // SCALE_MOD_DURING_REC_
         // ALWAYS SET THIS TO MAX FREQUENCY AT THE START !!!
 //#ifdef SCALE_FREQ_DURING_REC_
-        set_frequency(2400000);
+	int rank;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	set_max_freq_mammut(rank);
 //#endif // SCALE_FREQ_DURING_REC_
     }
 
 }
 
-void set_min_freq_mammut(int cpu) {
-    auto domains = Config::cpufreq->getDomains();
-    auto dom = domains[cpu];
-    dom->removeTurboFrequencies();
-    mammut::cpufreq::Frequency target = dom->getAvailableFrequencies().front(); // Use back() for maximum frequency
-    dom->setGovernor(mammut::cpufreq::GOVERNOR_USERSPACE);
-    dom->setFrequencyUserspace(target);
-    //printf("DEBUG: proc %d calls min_freq on cpu %d min. Target = %d at %lf\n", rank, cpu, target, MPI_Wtime()-start);
+void set_min_freq_mammut(int rank) {
+    mammut::cpufreq::Domain* d = Config::cpufreq->getDomain(Config::virtualCore);
+    d->removeTurboFrequencies();
+    mammut::cpufreq::Frequency target = d->getAvailableFrequencies().front(); // Use back() for maximum frequency
+    d->setGovernor(mammut::cpufreq::GOVERNOR_USERSPACE);
+    d->setFrequencyUserspace(target);
+    //printf("DEBUG: proc %d calls min_freq Target = %d at %lf\n", rank, target, MPI_Wtime());
 }
 
-void set_max_freq_mammut(int cpu) {
-    //printf("DEBUG: proc %d calls max_freq min\n", rank);
-    auto domains = Config::cpufreq->getDomains();
-    auto dom = domains[cpu];
-    dom->removeTurboFrequencies();
-    mammut::cpufreq::Frequency target = dom->getAvailableFrequencies().back(); // Use back() for maximum frequency
-    dom->setGovernor(mammut::cpufreq::GOVERNOR_USERSPACE);
-    dom->setFrequencyUserspace(target);
-    //printf("DEBUG: proc %d calls max_freq on cpu %d min. Target = %d at %lf\n", rank, cpu, target, MPI_Wtime()-start);
+void set_max_freq_mammut(int rank) {
+    mammut::cpufreq::Domain* d = Config::cpufreq->getDomain(Config::virtualCore);
+    d->removeTurboFrequencies();
+    mammut::cpufreq::Frequency target = d->getAvailableFrequencies().back(); // Use back() for maximum frequency
+    d->setGovernor(mammut::cpufreq::GOVERNOR_USERSPACE);
+    d->setFrequencyUserspace(target);
+    //printf("DEBUG: proc %d calls max_freq Target = %d at %lf\n", rank, target, MPI_Wtime());
 }
 
 int get_socket(int rank, int size) {
@@ -146,7 +144,7 @@ void down_up(MPI_Comm world, int iteration, int rank, int size) {
     //MPI_Barrier(world);
     if (!NO_MAMMUT) {
 #ifdef SCALE_FREQ_DURING_REC_
-        set_frequency(1200000);
+	    set_min_freq_mammut(rank);
         // this is needed, because ranks shouldn't
         // end up changing up and down the socket frequency
         //MPI_Barrier(world);
@@ -177,7 +175,7 @@ void down_up(MPI_Comm world, int iteration, int rank, int size) {
         MPI_Barrier(world);
         printf("Rank %d After barrier in it %d at %lf\n", rank, iteration, MPI_Wtime());
 #ifdef SCALE_FREQ_DURING_REC_
-        set_frequency(2400000);
+        set_max_freq_mammut(rank);
 #endif // SCALE_FREQ_DURING_REC_
 #ifdef SCALE_MOD_DURING_REC_
         fraction = 1.0;
@@ -200,11 +198,11 @@ void log_stats(double *log_joules, double * log_times, int iter, int kill_iter, 
         all_joules = (double *) malloc(sizeof(double)*size*iter);
         all_times = (double *) malloc(sizeof(double)*size*iter);
     }
-    printf("Rank %d: will call gather with log_joules=%p, iter=%d, all_joules=%p\n", me, log_joules, iter, all_joules);
+    //printf("Rank %d: will call gather with log_joules=%p, iter=%d, all_joules=%p\n", me, log_joules, iter, all_joules);
     MPI_Barrier(world);
     MPI_Gather(log_joules, iter, MPI_DOUBLE, all_joules, iter, MPI_DOUBLE, LOGGING_PROC, world);
     MPI_Gather(log_times, iter, MPI_DOUBLE, all_times, iter, MPI_DOUBLE, LOGGING_PROC, world);
-    printf("Rank %d: after call gather with log_joules=%p, iter=%d, all_joules=%p\n", me, log_joules, iter, all_joules);
+    //printf("Rank %d: after call gather with log_joules=%p, iter=%d, all_joules=%p\n", me, log_joules, iter, all_joules);
 
     if (me == LOGGING_PROC) {
         // make sure you add

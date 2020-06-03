@@ -108,6 +108,8 @@ static std::vector<double> log_times;
 //we should always use this buffer for transactions and correct local rollback
 #define USE_TEMP_BUF_ 1
 
+#define REDUCE_LOGGER (size-1)
+
 int pinit = 1;
 struct Domain *pdom;
 
@@ -124,6 +126,7 @@ int EVENT_LOGGER;
 #endif
 
 
+static MPI_Comm reduce_comm;
 static int MPIX_Comm_replace(MPI_Comm comm, MPI_Comm *newcomm);
 
 static int me = 0;
@@ -143,7 +146,6 @@ static jmp_buf stack_jmp_buf;
 /* world will swap between worldc[0] and worldc[1] after each respawn */
 static MPI_Comm worldc[2] = { MPI_COMM_NULL, MPI_COMM_NULL };
 static int worldi = 0;
-MPI_Comm reduce_comm;
 
 #define world (worldc[worldi])
 
@@ -247,7 +249,7 @@ static int MPIX_Comm_replace(MPI_Comm comm, MPI_Comm *newcomm)
         MPI_Comm_set_errhandler( scomm, MPI_ERRORS_RETURN );
         MPI_Info info;
         MPI_Info_create(&info);
-        MPI_Info_set(info, "host", "kos1");
+        MPI_Info_set(info, "host", "m1");
   //      MPI_Info_set(info, "ompi_param", "btl_tcp_if_include eno1");
         rc = MPI_Comm_spawn(gargv[0], &gargv[1], nd, info,
                             0, scomm, &icomm, MPI_ERRCODES_IGNORE);
@@ -2618,8 +2620,16 @@ void TimeIncrement(Domain *domain, int replay_it)
         isReplay = false;
     }
     else {
+	//printf("Rank %d: I am replaying to others in my iter peer_iters[me] = %d, domain->cycle =%d\n", me, peer_iters[me], domain->cycle);
         replay_it = min_iter;
     }
+
+    // ALWAYS advance peer_iter for peers in 
+    // ongoing iteration -- recovering or not
+    // only increment normal iterations, not replays
+	for  (std::vector<int>::iterator it = peer_iters.begin(); it != peer_iters.end(); it++) {
+		if (*it  == min_iter) { (*it)++; }
+	}
 
     // save log
     if (!isReplay) {
@@ -2668,23 +2678,37 @@ void TimeIncrement(Domain *domain, int replay_it)
     //((sizeof(Real_t) == 4) ? MPI_FLOAT : MPI_DOUBLE),
     //MPI_MIN, world);
     MPI_Datatype type = ((sizeof(Real_t) == 4) ? MPI_FLOAT : MPI_DOUBLE);
+
+    allreduce_wrapper(&gnewdt, &newdt, 1,
+		    type,
+		    MPI_MIN, world, domain->cycle, replay_it+1);
+/*
+
    if (max_iter == min_iter) {
         allreduce_wrapper(&gnewdt, &newdt, 1,
                  type,
                 MPI_MIN, world, domain->cycle, replay_it);
-        log_newdt[domain->cycle-1] = newdt; // we incremented in this iteration, so turn back to pre-increment
+        log_newdt[domain->cycle] = newdt; // we incremented in this iteration, so turn back to pre-increment
+        //log_newdt[domain->cycle-1] = newdt; // we incremented in this iteration, so turn back to pre-increment
    }
     else {
-        if ((me == (FAILED_PROC+1)%domain->numProcs) && (log_newdt.find(replay_it) == log_newdt.end())) {
-            fprintf(stderr, "Didn't find log_newdt entry\n");
-            MPI_Abort(world, -1);
-        }
-        if (me == FAILED_PROC) MPI_Recv(&newdt, 1, type, (FAILED_PROC+1)%domain->numProcs, 0, world, MPI_STATUS_IGNORE);
-        if (me == (FAILED_PROC+1)%domain->numProcs) MPI_Send(&log_newdt[replay_it], 1, type, FAILED_PROC, 0, world);
+	if (reduce_comm != MPI_COMM_NULL) {
+		int newrank;
+		MPI_Comm_rank(reduce_comm, &newrank);
+		if (newrank == 0) {
+			if (log_newdt.find(replay_it+1) == log_newdt.end()) {
+				fprintf(stderr, "Rank %d didn't find log_newdt entry for iter %d\n", me, replay_it+1);
+				MPI_Abort(world, -1);
+			}
+			MPI_Send(&log_newdt[replay_it+1], 1, type, FAILED_PROC, 333, world);
+		}
+	}
+        if (me == FAILED_PROC) MPI_Recv(&newdt, 1, type, MPI_ANY_TAG, 333, world, MPI_STATUS_IGNORE);
 
-        newdt = log_newdt[replay_it];
+        newdt = log_newdt[replay_it+1];
     }
 
+*/
 
     //if (!isReplay) {
         ratio = newdt / olddt ;
@@ -2717,12 +2741,6 @@ void TimeIncrement(Domain *domain, int replay_it)
         domain->time += domain->deltatime ;
     //}
 
-    // ALWAYS advance peer_iter for peers in 
-    // ongoing iteration -- recovering or not
-    // only increment normal iterations, not replays
-    for  (std::vector<int>::iterator it = peer_iters.begin(); it != peer_iters.end(); it++) {
-        if (*it  == min_iter) { (*it)++; }
-    }
 
 }
 
@@ -6036,6 +6054,9 @@ void DumpDomain(Domain *domain, int myRank, int numProcs, char readOrWrite)
 
 void replay(bool failed, Domain *locDom, int myRank, int numProcs) {
 
+
+// use this communicator to find unique process to replay 
+// from MPI_Allreduce in TimeIncrement
     // failed node rolls back 
     if (failed) {
         //printf("Rank %d: Read checkpoint ...\n", me);
@@ -6048,7 +6069,6 @@ void replay(bool failed, Domain *locDom, int myRank, int numProcs) {
     MPI_Allgather( &locDom->cycle, 1, MPI_INT, peer_iters.data(), 1, MPI_INT, world);
     max_iter = *std::max_element(peer_iters.begin(), peer_iters.end());
     int min_iter = *std::min_element(peer_iters.begin(), peer_iters.end());
-
 
     int global = (LOG_BFR_DEPTH == 0) || ((LOG_BFR_DEPTH > 0) && (max_iter % CKPT_STEP > LOG_BFR_DEPTH));
 
@@ -6202,7 +6222,6 @@ int main(int argc, char *argv[])
   int do_recover = 0;
 
 
-
   MPI_Init(&argc, &argv) ;
   init_mammut();
   gargv = argv;
@@ -6242,6 +6261,11 @@ int main(int argc, char *argv[])
 #endif
   
   setup_failures();
+
+  int size = numProcs;
+  if (me == REDUCE_LOGGER) {
+    std::remove("allreduce.txt"); // delete file
+  }
 
   peer_iters.resize(numProcs,0);
 
@@ -6388,71 +6412,71 @@ int main(int argc, char *argv[])
     /* timestep to solution */
 
     timer_start(0);
-    while (locDom->time < locDom->stoptime && locDom->cycle < opt_its) {
+    while (/*locDom->time < locDom->stoptime && */locDom->cycle < opt_its) {
 #if LULESH_SHOW_PROGRESS
-      //if (myRank == 0) {
-         printf("(Rank %d): start cycle = %d, time = %e, dt=%e,  domain energy=%e\n", me, locDom->cycle, double(locDom->time), double(locDom->deltatime), (double) locDom->e[0]) ;
-      //}
+	    //if (myRank == 0) {
+	    //printf("(Rank %d): start cycle = %d, time = %e, dt=%e,  domain energy=%e\n", me, locDom->cycle, double(locDom->time), double(locDom->deltatime), (double) locDom->e[0]) ;
+	    //}
 #endif
-        start_it = MPI_Wtime();
-        if (!NO_MAMMUT) Config::counter->reset();
+	    start_it = MPI_Wtime();
+	    if (!NO_MAMMUT) Config::counter->reset();
 
-        if (post_failure) {
-            allowed_to_kill = 0;
-            replay(false, locDom, myRank, numProcs);
-            post_failure = false;
-        }
-        if (post_failure_sync) {
-            if (locDom->cycle == max_iter)  {
-                post_failure_sync = false;
-                printf("Rank %d: will call barrier in iter locDom->cycle = %d\n", myRank, locDom->cycle);
-                //MPI_Comm newcomm;
-                //int color = (me != FAILED_PROC);
-                //if (color == 0) color = MPI_UNDEFINED;
-                //MPI_Comm_split(world, color, me, &newcomm);
-                down_up(world, locDom->cycle, myRank, numProcs);
-            }
+	    if (post_failure) {
+		    allowed_to_kill = 0;
+		    replay(false, locDom, myRank, numProcs);
+		    post_failure = false;
+	    }
+	    if (post_failure_sync) {
+		    if (locDom->cycle == max_iter)  {
+			    post_failure_sync = false;
+			    printf("Rank %d: will call barrier in iter locDom->cycle = %d\n", myRank, locDom->cycle);
+			    //MPI_Comm newcomm;
+			    //int color = (me != FAILED_PROC);
+			    //if (color == 0) color = MPI_UNDEFINED;
+			    //MPI_Comm_split(world, color, me, &newcomm);
+			    down_up(world, locDom->cycle, myRank, numProcs);
+		    }
 
-        }
-        if (locDom->cycle % cfreq == 0)  
-        {
-            timer_start(1);
-            DumpDomain(locDom, myRank, numProcs, 'w') ;
-            timer_stop(1);
-        }
+	    }
+	    if (locDom->cycle % cfreq == 0)  
+	    {
+		    timer_start(1);
+		    DumpDomain(locDom, myRank, numProcs, 'w') ;
+		    timer_stop(1);
+	    }
 
 
 #ifdef USE_TEMP_BUF_
-        timer_start(8);
-        CopyDomain(locDom, tmp_domain);
-        timer_stop(8);
-        LagrangeLeapFrog(tmp_domain, tmp_domain->cycle) ;
-        timer_start(8);
-        CopyDomain(tmp_domain, locDom);
-        timer_stop(8);
+	    timer_start(8);
+	    CopyDomain(locDom, tmp_domain);
+	    timer_stop(8);
+	    LagrangeLeapFrog(tmp_domain, tmp_domain->cycle) ;
+	    timer_start(8);
+	    CopyDomain(tmp_domain, locDom);
+	    timer_stop(8);
 #else
-        LagrangeLeapFrog(locDom, locDom->cycle) ;
+	    LagrangeLeapFrog(locDom, locDom->cycle) ;
 #endif
-        end_it = MPI_Wtime();
-        if (!NO_MAMMUT) {mammut::energy::Joules joules = Config::counter->getJoules();
-            //total_joules += joules;
-            int global = (LOG_BFR_DEPTH == 0);
-            if (!global) {
-                log_joules[locDom->cycle] = joules;
-                log_times[locDom->cycle] = end_it - start_it;
-            }
-            else {
-                log_joules[locDom->cycle] += joules;
-                log_times[locDom->cycle] += end_it - start_it;
-            }
-        }
+	    end_it = MPI_Wtime();
+	    if (!NO_MAMMUT) {mammut::energy::Joules joules = Config::counter->getJoules();
+		    //total_joules += joules;
+		    int global = (LOG_BFR_DEPTH == 0);
+		    if (!global) {
+			    log_joules[locDom->cycle] = joules;
+			    log_times[locDom->cycle] = end_it - start_it;
+		    }
+		    else {
+			    log_joules[locDom->cycle] += joules;
+			    log_times[locDom->cycle] += end_it - start_it;
+		    }
+	    }
 #if LULESH_SHOW_PROGRESS
-      //if (myRank == 0) {
-         printf("(Rank %d): end cycle = %d, time = %e, dt=%e,  domain energy=%e\n", me, locDom->cycle, double(locDom->time), double(locDom->deltatime), (double) locDom->e[0]) ;
-      //}
+	    //if (myRank == 0) {
+	    printf("(Rank %d): end cycle = %d, time = %e, dt=%e,  domain energy=%e\n", me, locDom->cycle, double(locDom->time), double(locDom->deltatime), (double) locDom->e[0]) ;
+	    //}
 #endif
-         TimeIncrement(locDom, locDom->cycle);
-   }
+	    TimeIncrement(locDom, locDom->cycle);
+    }
    timer_stop(0);
 
 
@@ -6479,13 +6503,13 @@ int main(int argc, char *argv[])
    }
 #endif
 
+   MPI_Barrier(world);
    MPI_Finalize() ;
 
    return 0 ;
 }
 
-int send_wrapper(const void *buf, int count, MPI_Datatype datatype, int dest, int tag,
-                  MPI_Comm comm, MPI_Request * request, int * cnt, int replay_it, int phase, int stage) {
+int send_wrapper(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm, MPI_Request * request, int * cnt, int replay_it, int phase, int stage) {
 
 
     // simulate event logging
@@ -6507,6 +6531,7 @@ int send_wrapper(const void *buf, int count, MPI_Datatype datatype, int dest, in
                 //printf("(Rank %d:) SANITY CHECK (STANDARD) in 11-2-1: elem %lf\n", me, * (double *) buf);
             //}
             timer_start(6);
+	    //printf("Rank %d: append_log [%d,%d,%d]\n", replay_it,stage,phase);
             append_log(replay_it, stage, phase, buf, count);
             timer_stop(6);
             return MPI_Isend(buf, count, datatype, dest, tag, comm, request);
@@ -6517,13 +6542,10 @@ int send_wrapper(const void *buf, int count, MPI_Datatype datatype, int dest, in
 
             std::pair<std::pair<int,int>, int> triplet = std::make_pair(std::make_pair(replay_it,stage), phase);
             if (log_buffer.find(triplet) == log_buffer.end()) {
-                fprintf(stderr, "Couldn't find a log where it was expected\n");
+                fprintf(stderr, "Rank %d: Couldn't find a log where it was expected for triplet %d-%d-%d\n", me, replay_it,stage,phase);
                 MPI_Abort(world, -1);
             }
             void * buf2 = log_buffer[std::make_pair(std::make_pair(replay_it,stage),phase)];
-            if (replay_it == 11 && stage == 2 && phase == 1) {
-                //printf("(Rank %d:) SANITY CHECK (REPLAY) in 11-2-1: elem %lf\n", me, * (double *) buf2);
-            }
             return MPI_Isend(buf2, count, datatype, dest, tag, comm, request);
         }
         else {
@@ -6598,11 +6620,37 @@ int MPI_Waitall(int count, MPI_Request array_of_requests[],
  
 
 int allreduce_wrapper(const void *sendbuf, void *recvbuf, int count,
-        MPI_Datatype datatype, MPI_Op op, MPI_Comm comm, int iter, int replay_iter) {
+		MPI_Datatype datatype, MPI_Op op, MPI_Comm comm, int iter, int replay_iter) {
 
-#ifdef ENABLE_EVENT_LOG_
-        return MPI_Allreduce(sendbuf, recvbuf, count, datatype, op, reduce_comm);
-#else
-        return MPI_Allreduce(sendbuf, recvbuf, count, datatype, op, comm);
-#endif
+	if (op != MPI_MIN) {
+		fprintf(stderr, "Only MIN version of allreduce available\n");
+		MPI_Abort(comm, -1);
+	}
+	int size;
+	MPI_Comm_size(world,& size);
+	const int dest = (me + 1)%size;
+	const int source = (size+me - 1)%size;
+	MPI_Request req = MPI_REQUEST_NULL;
+	int cnt = 0;
+	Real_t current_min = *(Real_t *)sendbuf;
+	//printf("Rank %d: peer_iter[me] = %d, iter = %d, replay_iter = %d\n", me, peer_iters[me], iter, replay_iter);
+	for (int i=1; i<size; i++) {
+		send_wrapper(sendbuf, count, datatype, dest, 33,
+				comm,  &req, &cnt, replay_iter, 27, i); 
+		if (replay_iter == peer_iters[me]) {
+			if (peer_iters[me] <= peer_iters[source]) {
+				MPI_Recv(recvbuf, count, datatype, source, 33, comm, MPI_STATUS_IGNORE);
+			}
+			else {}//{printf("Rank %d Skip receive in replay iter %d\n", me, replay_iter);}
+		}
+		else {} //{printf("Rank %d Skip receive in replay iter %d\n", me, replay_iter);}
+		//if (req == MPI_REQUEST_NULL) {printf("Skip send\n");}
+		MPI_Wait(&req, MPI_STATUS_IGNORE);
+		Real_t * reduce = (Real_t *) recvbuf;
+		if (current_min > *reduce) current_min = *reduce;
+	}
+	*(Real_t *) recvbuf = current_min;
+
+	return 0;
+
 }

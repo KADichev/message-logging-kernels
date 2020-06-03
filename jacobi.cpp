@@ -231,7 +231,7 @@ if( comm == MPI_COMM_NULL ) { /* am I a new process? */
     printf("Rank %d: about to respawn someone\n", rank);
     MPI_Info info;
     MPI_Info_create(&info);
-    MPI_Info_set(info,"host","kos0");
+    MPI_Info_set(info,"host","m1");
     rc = MPI_Comm_spawn(gargv[0], &gargv[1], nd, info,
                         0, scomm, &icomm, MPI_ERRCODES_IGNORE);
     printf("Rank %d: after respawn someone\n", rank);
@@ -611,8 +611,11 @@ do_sor:
 
         int global = (LOG_BFR_DEPTH == 0);
         if (!NO_MAMMUT) {
-            end_it = MPI_Wtime();
-            mammut::energy::Joules joules = Config::counter->getJoules();
+            end_it = MPI_Wtime();mammut::energy::Joules joules;
+	    if (Config::counter != NULL) joules  = Config::counter->getJoules();
+	    else {
+              printf("counter is NULL!\n");
+	    }
             //mammut::energy::Joules joules = Config::counterCpus->getJoulesCpuAll();
             total_joules += joules;
             //std::cout << "Rank " << rank << "IT  " << iteration << "end-it - start-it" << (end_it -start_it) << std::endl;
@@ -652,8 +655,6 @@ do_sor:
 
 
     log_stats(log_joules, log_times, iteration, KILL_ITER, size, FAILED_RANK, world, rank);
-    printf("Proc %d before del after log stats\n", rank);
-    printf("Proc %d after log stats\n", rank);
 
     return iteration;
 }

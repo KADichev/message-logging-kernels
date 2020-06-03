@@ -31,7 +31,7 @@ static int FAILED_PROC;
 static int KILL_OUTER_ITER;
 static int KILL_INNER_ITER;
 static int KILL_PHASE;
-#define CGITMAX 50
+#define CGITMAX 100
 // from S class
 //#define NONZER 7
 #define NITER 2
@@ -243,7 +243,7 @@ static int MPIX_Comm_replace(MPI_Comm comm, MPI_Comm *newcomm)
         MPI_Comm_set_errhandler( scomm, MPI_ERRORS_RETURN );
         MPI_Info info;
         MPI_Info_create(&info);
-        MPI_Info_set(info, "host", "kos0");
+        MPI_Info_set(info, "host", "m1");
         rc = MPI_Comm_spawn(gargv[0], &gargv[1], nd, info,
                             0, scomm, &icomm, MPI_ERRCODES_IGNORE);
         flag = (MPI_SUCCESS == rc);
@@ -438,7 +438,7 @@ void writea(int rowstr[], int colidx[], double a[]) {
 void reada(int rowstr[], int colidx[], double a[]) {
 
   char filename[16];
-  sprintf (filename, "matrix-%d.dat", me);
+  sprintf (filename, "/tmp/matrix-%d.dat", me);
   FILE * file = fopen(filename, "r");
   if (file == NULL) {
     printf("Can't read matrix file\n");
@@ -810,19 +810,33 @@ void setup_proc_info(int num_procs) {
  //     }
 
 
-       int root_nprocs = sqrt(num_procs);
-      //int lognprocs = log2(num_procs);
-      // cover case 1 MPI proc only
-      //if (lognprocs == 0) lognprocs = 1;
-      if (root_nprocs * root_nprocs != num_procs) {
-        printf("Proc number not power of two, not dealing with this ...\n");
-        MPI_Abort(world, -1);
-      }
+   int check = num_procs;
+   while (check % 2 == 0) {
+     check /= 2;
+   }
+   //int lognprocs = log2(num_procs);
+   // cover case 1 MPI proc only
+   //if (lognprocs == 0) lognprocs = 1;
+   if (check != 1) {
+     printf("Proc number not power of two, not dealing with this ...\n");
+     MPI_Abort(world, -1);
+   }
 
-      npcols = sqrt(num_procs); //lognprocs;
-      nprows = sqrt(num_procs); //lognprocs;
-      //printf("(Rank %d): npcols %d, nprows %d\n", me, npcols, nprows);
-     
+   npcols = sqrt(num_procs); //lognprocs;
+   if (npcols * npcols == num_procs) {
+	nprows = npcols;
+   }
+   else {
+     npcols  = sqrt (num_procs/2);
+     nprows = 2*npcols;
+       if (npcols * nprows != num_procs) {
+         printf("I could not calculate npcols x nprows = num_procs, will abort!\n");
+         MPI_Abort(world, -1);
+       }
+   }
+   nprows = sqrt(num_procs); //lognprocs;
+   //printf("(Rank %d): npcols %d, nprows %d\n", me, npcols, nprows);
+  
 }
 
 void setup_submatrix_info(int * reduce_exch_proc, int * reduce_send_starts, int * reduce_send_lengths, int * reduce_recv_starts, int * reduce_recv_lengths) {
@@ -938,7 +952,7 @@ void setup_submatrix_info(int * reduce_exch_proc, int * reduce_send_starts, int 
 
     j = ((proc_col+div_factor/2) % div_factor)     + proc_col / div_factor * div_factor;
     reduce_exch_proc[i] = proc_row*npcols + j ;
-    //printf("rank %d, reduce_exch_proc[%d] = %d\n", me, i, reduce_exch_proc[i]);
+    //printf("rank %d, reduce_exch_proc[%d] = %d = %d * %d + %d\n", me, i, reduce_exch_proc[i], proc_row, npcols, j);
     //fflush(stdout);
     div_factor = div_factor / 2;
   }
@@ -1196,6 +1210,7 @@ void conj_grad (int colidx[], int rowstr[], double x[], double z[], double a[], 
     //---------------------------------------------------------------------
 
 
+    //printf("Rank %d: before first MPI_Allreduce\n",me);
     for (int i = 0; i<l2npcols; i++) {
         MPI_Irecv(&rho, 1, MPI_DOUBLE, reduce_exch_proc[i], 995, world, &request);
         timer_start(3);
@@ -1204,6 +1219,7 @@ void conj_grad (int colidx[], int rowstr[], double x[], double z[], double a[], 
         timer_stop(3);
         sum = sum + rho;
     }
+    //printf("Rank %d: after first MPI_Allreduce\n",me);
 
 
     //---------------------------------------------------------------------
@@ -1676,7 +1692,7 @@ int main(int argc, char **argv) {
 
   char hostname[64];
   gethostname(hostname,64);
-  printf("PROC: %d - HOSTNAME: %s\n", me, hostname);
+  //printf("PROC: %d - HOSTNAME: %s\n", me, hostname);
   setup_proc_info(nprocs);
   setup_failures();
 
@@ -1803,7 +1819,7 @@ int main(int argc, char **argv) {
   free(r);
   free(w);
   //writea(rowstr, colidx, a);
-  printf("Process %d: before finalize\n", me);
+  //printf("Process %d: before finalize\n", me);
   MPI_Barrier(world);
   MPI_Finalize();
   return 0;
