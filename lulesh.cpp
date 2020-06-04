@@ -2607,9 +2607,7 @@ void CommMonoQ(Domain *domain)
 
 /* Work Routines */
 
-static inline
-void TimeIncrement(Domain *domain, int replay_it)
-{
+void update_iter(Domain * domain)  {
 
     int max_iter = *std::max_element(peer_iters.begin(), peer_iters.end());
     int min_iter = *std::min_element(peer_iters.begin(), peer_iters.end()); // advance cycle if normal iteration
@@ -2619,10 +2617,6 @@ void TimeIncrement(Domain *domain, int replay_it)
         domain->cycle++;
         isReplay = false;
     }
-    else {
-	//printf("Rank %d: I am replaying to others in my iter peer_iters[me] = %d, domain->cycle =%d\n", me, peer_iters[me], domain->cycle);
-        replay_it = min_iter;
-    }
 
     // ALWAYS advance peer_iter for peers in 
     // ongoing iteration -- recovering or not
@@ -2630,30 +2624,11 @@ void TimeIncrement(Domain *domain, int replay_it)
 	for  (std::vector<int>::iterator it = peer_iters.begin(); it != peer_iters.end(); it++) {
 		if (*it  == min_iter) { (*it)++; }
 	}
+}
 
-    // save log
-    if (!isReplay) {
-        if (log_reduce.find(replay_it) == log_reduce.end()) {
-            struct tmp_timings t;
-            t.deltatime = domain->deltatime;
-            t.dtcourant = domain->dtcourant;
-            t.time = domain->time;
-            t.dthydro = domain->dthydro;
-            log_reduce[replay_it] = t;
-        }
-        else {
-            printf("There is an entry, not overwriting!!!\n");
-        }
-
-    }
-    // load log, if still replaying
-    else // could be we are in the first post-failure iteration
-    {
-        domain->deltatime = log_reduce[replay_it].deltatime;
-        domain->dtcourant = log_reduce[replay_it].dtcourant;
-        domain->time = log_reduce[replay_it].time;
-        domain->dthydro = log_reduce[replay_it].dthydro;
-    }
+static inline
+void TimeIncrement(Domain *domain, int replay_it)
+{
 
     Real_t targetdt = domain->stoptime - domain->time ;
 
@@ -2673,44 +2648,13 @@ void TimeIncrement(Domain *domain, int replay_it)
         }
     }
 
-    // THIS NEEDS TO BE FIXED  -- need to USE replays !!!
-    //MPI_Allreduce(&gnewdt, &newdt, 1,
-    //((sizeof(Real_t) == 4) ? MPI_FLOAT : MPI_DOUBLE),
-    //MPI_MIN, world);
     MPI_Datatype type = ((sizeof(Real_t) == 4) ? MPI_FLOAT : MPI_DOUBLE);
 
     allreduce_wrapper(&gnewdt, &newdt, 1,
 		    type,
-		    MPI_MIN, world, domain->cycle, replay_it+1);
-/*
+		    MPI_MIN, world, domain->cycle, replay_it);
+   update_iter(domain);
 
-   if (max_iter == min_iter) {
-        allreduce_wrapper(&gnewdt, &newdt, 1,
-                 type,
-                MPI_MIN, world, domain->cycle, replay_it);
-        log_newdt[domain->cycle] = newdt; // we incremented in this iteration, so turn back to pre-increment
-        //log_newdt[domain->cycle-1] = newdt; // we incremented in this iteration, so turn back to pre-increment
-   }
-    else {
-	if (reduce_comm != MPI_COMM_NULL) {
-		int newrank;
-		MPI_Comm_rank(reduce_comm, &newrank);
-		if (newrank == 0) {
-			if (log_newdt.find(replay_it+1) == log_newdt.end()) {
-				fprintf(stderr, "Rank %d didn't find log_newdt entry for iter %d\n", me, replay_it+1);
-				MPI_Abort(world, -1);
-			}
-			MPI_Send(&log_newdt[replay_it+1], 1, type, FAILED_PROC, 333, world);
-		}
-	}
-        if (me == FAILED_PROC) MPI_Recv(&newdt, 1, type, MPI_ANY_TAG, 333, world, MPI_STATUS_IGNORE);
-
-        newdt = log_newdt[replay_it+1];
-    }
-
-*/
-
-    //if (!isReplay) {
         ratio = newdt / olddt ;
         if (ratio >= Real_t(1.0)) {
             if (ratio < domain->deltatimemultlb) {
@@ -2739,7 +2683,6 @@ void TimeIncrement(Domain *domain, int replay_it)
 
         
         domain->time += domain->deltatime ;
-    //}
 
 
 }
@@ -6128,7 +6071,14 @@ void replay(bool failed, Domain *locDom, int myRank, int numProcs) {
                         locDom->sizeX + 1, locDom->sizeY + 1, locDom->sizeZ + 1,
                         false, false, j, 4) ;
 #endif
-                TimeIncrement(locDom, j) ;
+                //TimeIncrement(locDom, j) ;
+		MPI_Datatype type = ((sizeof(Real_t) == 4) ? MPI_FLOAT : MPI_DOUBLE);
+		Real_t dummy1 = 0.0;
+		Real_t dummy2 = 0.0;
+		allreduce_wrapper(&dummy1, &dummy2, 1,
+				type,
+				MPI_MIN, world, locDom->cycle, j);
+		update_iter(locDom);
             }
         }
     } // end survivor
