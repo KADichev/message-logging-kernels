@@ -157,23 +157,16 @@ void down_up(MPI_Comm world, int iteration, int rank, int size) {
         set_12core_max_freq(12, 1200000);
 #endif // SCALE_FREQ_DURING_REC_PSTATE_
         // go back to normal operation
-        printf("Rank %d Before barrier in it %d at %lf\n", rank, iteration, MPI_Wtime());
 
-        /*
-           int right = (rank+1) % size;
-           int left = (size+rank-1) % size;
-           int dummy1 = 99;
-           int dummy2;
-           MPI_Sendrecv(&dummy1, 1, MPI_INT, right, 110, &dummy2, 1, MPI_INT, left, 110, world, MPI_STATUS_IGNORE);
-           */
-        // This is very important, if this is lower than other's iterations, this
-        // will deadlock !!!!
+        //printf("Rank %d Before barrier in it %d at %lf\n", rank, iteration, MPI_Wtime());
 
-        //int dummy;
-        //MPI_Recv(&dummy, 1, MPI_INT, last_dead, 0, world, MPI_STATUS_IGNORE);
-
+	double t1 = MPI_Wtime();
         MPI_Barrier(world);
-        printf("Rank %d After barrier in it %d at %lf\n", rank, iteration, MPI_Wtime());
+	double t2 = MPI_Wtime();
+        //printf("Rank %d After barrier in it %d at %lf\n", rank, iteration, MPI_Wtime());
+        if (t2-t1 < 0.1) {
+		printf("PROC %d is probably from S_active\n", rank);
+	}
 #ifdef SCALE_FREQ_DURING_REC_
         set_max_freq_mammut(rank);
 #endif // SCALE_FREQ_DURING_REC_

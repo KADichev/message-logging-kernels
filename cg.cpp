@@ -827,14 +827,16 @@ void setup_proc_info(int num_procs) {
 	nprows = npcols;
    }
    else {
-     npcols  = sqrt (num_procs/2);
-     nprows = 2*npcols;
+     //npcols  = sqrt (num_procs/2);
+     //nprows = 2*npcols;
+     nprows = sqrt(num_procs/2);
+     npcols = 2*nprows;
        if (npcols * nprows != num_procs) {
          printf("I could not calculate npcols x nprows = num_procs, will abort!\n");
          MPI_Abort(world, -1);
        }
    }
-   nprows = sqrt(num_procs); //lognprocs;
+   //nprows = sqrt(num_procs); //lognprocs;
    //printf("(Rank %d): npcols %d, nprows %d\n", me, npcols, nprows);
   
 }
@@ -952,7 +954,7 @@ void setup_submatrix_info(int * reduce_exch_proc, int * reduce_send_starts, int 
 
     j = ((proc_col+div_factor/2) % div_factor)     + proc_col / div_factor * div_factor;
     reduce_exch_proc[i] = proc_row*npcols + j ;
-    //printf("rank %d, reduce_exch_proc[%d] = %d = %d * %d + %d\n", me, i, reduce_exch_proc[i], proc_row, npcols, j);
+    //printf("(Rank %d): in setup, reduce_exch_proc[%d] = %d = %d * %d + %d\n", me, i, reduce_exch_proc[i], proc_row, npcols, j);
     //fflush(stdout);
     div_factor = div_factor / 2;
   }
